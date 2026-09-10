@@ -86,6 +86,8 @@ public:
         int simStep = 0;
         double startTime = 0.0;
         double stepLength = 0.0;
+        // Flattened face-major, then active phases in canonical Oil/Water/Gas
+        // order filtered by Header::phaseMask.
         std::vector<double> rates;
         std::vector<double> pressures;
         std::vector<double> swat;
