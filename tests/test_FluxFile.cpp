@@ -21,6 +21,7 @@
 #define BOOST_TEST_MODULE Test FluxFile
 #include <boost/test/unit_test.hpp>
 
+#include <opm/io/eclipse/EclFile.hpp>
 #include <opm/io/eclipse/EclOutput.hpp>
 #include <opm/io/eclipse/FluxFile.hpp>
 
@@ -50,6 +51,9 @@ Opm::EclIO::FluxFile::Data sampleData()
     data.header.numBoundaryFaces = 2;
     data.header.numReportSteps = 2;
     data.header.numPhases = 3;
+    data.header.phaseMask = static_cast<int>(FluxFile::Phase::Oil)
+                          | static_cast<int>(FluxFile::Phase::Water)
+                          | static_cast<int>(FluxFile::Phase::Gas);
     data.header.hasTemperature = true;
     data.header.mode = FluxFile::Mode::Both;
     data.header.sampling = FluxFile::Sampling::Averaged;
@@ -103,6 +107,26 @@ void expectRoundTrip(const std::string& filename, const bool formatted)
     BOOST_CHECK(readBack == written);
 }
 
+Opm::EclIO::FluxFile::Data gasOilData()
+{
+    using FluxFile = Opm::EclIO::FluxFile;
+
+    auto data = sampleData();
+    data.header.numPhases = 2;
+    data.header.phaseMask = static_cast<int>(FluxFile::Phase::Oil)
+                          | static_cast<int>(FluxFile::Phase::Gas);
+
+    for (auto& step : data.reportSteps) {
+        step.rates = {
+            step.rates[0], step.rates[2],
+            step.rates[3], step.rates[5],
+        };
+        step.swat.clear();
+    }
+
+    return data;
+}
+
 } // namespace
 
 BOOST_AUTO_TEST_CASE(BinaryRoundTrip)
@@ -117,12 +141,29 @@ BOOST_AUTO_TEST_CASE(FormattedRoundTrip)
     expectRoundTrip("SAMPLE.FFLUX", true);
 }
 
+BOOST_AUTO_TEST_CASE(OnlyPresentPhasesAreWritten)
+{
+    WorkArea work;
+
+    const auto written = gasOilData();
+    Opm::EclIO::FluxFile::write("GASOIL.FLUX", false, written);
+
+    Opm::EclIO::EclFile file("GASOIL.FLUX", Opm::EclIO::EclFile::Formatted{false}, true);
+    BOOST_CHECK(!file.hasKey("FLXSATW"));
+    BOOST_CHECK(file.hasKey("FLXSATG"));
+    BOOST_CHECK(file.hasKey("FLXRS"));
+    BOOST_CHECK(file.hasKey("FLXRV"));
+
+    const auto readBack = Opm::EclIO::FluxFile::read("GASOIL.FLUX");
+    BOOST_CHECK(readBack == written);
+}
+
 BOOST_AUTO_TEST_CASE(RejectsUnsupportedVersion)
 {
     WorkArea work;
 
     Opm::EclIO::EclOutput output("BADVERSION.FLUX", false);
-    output.write("FLUXHEAD", std::vector<int>{99, 20, 30, 10, 2, 9, 1, 19, 10, 10, 4, 2, 1, 3, 0, 1, 1, 0});
+    output.write("FLUXHEAD", std::vector<int>{99, 20, 30, 10, 2, 9, 1, 19, 10, 10, 4, 2, 1, 3, 0, 1, 1, 7});
     output.write("FLUXNAMS", std::vector<std::string>{"BASE", "REGION_2"}, 32);
     output.write("FLUXNCNT", std::vector<int>{2, 0});
     output.write("LOCGLOB", std::vector<int>{1, 2, 3, 4});
@@ -144,7 +185,7 @@ BOOST_AUTO_TEST_CASE(RejectsMissingRequiredArray)
     WorkArea work;
 
     Opm::EclIO::EclOutput output("MISSING.FLUX", false);
-    output.write("FLUXHEAD", std::vector<int>{1, 20, 30, 10, 2, 9, 1, 19, 10, 10, 4, 2, 1, 3, 0, 1, 1, 0});
+    output.write("FLUXHEAD", std::vector<int>{1, 20, 30, 10, 2, 9, 1, 19, 10, 10, 4, 2, 1, 3, 0, 1, 1, 7});
     output.write("FLUXNAMS", std::vector<std::string>{"BASE", "REGION_2"}, 32);
     output.write("FLUXNCNT", std::vector<int>{2, 0});
     output.write("LOCGLOB", std::vector<int>{1, 2, 3, 4});

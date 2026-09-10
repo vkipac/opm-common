@@ -26,6 +26,7 @@
 #include <fmt/format.h>
 
 #include <array>
+#include <bit>
 #include <stdexcept>
 #include <type_traits>
 #include <utility>
@@ -41,6 +42,7 @@ using StepMemberType = std::remove_cv_t<std::remove_reference_t<decltype(std::de
 constexpr int hasTemperatureIndex = 14;
 constexpr int modeIndex = 15;
 constexpr int samplingIndex = 16;
+constexpr int phaseMaskIndex = 17;
 constexpr int headerSize = 18;
 
 std::vector<int> makeHeader(const Opm::EclIO::FluxFile::Header& header)
@@ -63,7 +65,7 @@ std::vector<int> makeHeader(const Opm::EclIO::FluxFile::Header& header)
         header.hasTemperature ? 1 : 0,
         static_cast<int>(header.mode),
         static_cast<int>(header.sampling),
-        0,
+        header.phaseMask,
     };
 }
 
@@ -93,6 +95,7 @@ Opm::EclIO::FluxFile::Header parseHeader(const std::vector<int>& values)
     header.hasTemperature = values[hasTemperatureIndex] != 0;
     header.mode = static_cast<Opm::EclIO::FluxFile::Mode>(values[modeIndex]);
     header.sampling = static_cast<Opm::EclIO::FluxFile::Sampling>(values[samplingIndex]);
+    header.phaseMask = values[phaseMaskIndex];
     return header;
 }
 
@@ -161,6 +164,18 @@ std::vector<std::string> makeNames(const Opm::EclIO::FluxFile::Data& data)
     return names;
 }
 
+bool hasAnyValues(const std::vector<Opm::EclIO::FluxFile::ReportStep>& steps,
+                  const std::vector<double> Opm::EclIO::FluxFile::ReportStep::* member)
+{
+    for (const auto& step : steps) {
+        if (!(step.*member).empty()) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 Opm::EclIO::EclFile openFluxFile(const std::string& filename, bool preload)
 {
     try {
@@ -207,10 +222,22 @@ void FluxFile::write(const std::string& filename, bool formatted, const Data& da
 
     if ((static_cast<int>(data.header.mode) & static_cast<int>(Mode::Pressure)) != 0) {
         output.write("FLXPRES", flattenVectors(data.reportSteps, &ReportStep::pressures));
-        output.write("FLXSATW", flattenVectors(data.reportSteps, &ReportStep::swat));
-        output.write("FLXSATG", flattenVectors(data.reportSteps, &ReportStep::sgas));
-        output.write("FLXRS", flattenVectors(data.reportSteps, &ReportStep::rs));
-        output.write("FLXRV", flattenVectors(data.reportSteps, &ReportStep::rv));
+
+        if (data.header.hasPhase(Phase::Water)) {
+            output.write("FLXSATW", flattenVectors(data.reportSteps, &ReportStep::swat));
+        }
+
+        if (data.header.hasPhase(Phase::Gas)) {
+            output.write("FLXSATG", flattenVectors(data.reportSteps, &ReportStep::sgas));
+        }
+
+        if (hasAnyValues(data.reportSteps, &ReportStep::rs)) {
+            output.write("FLXRS", flattenVectors(data.reportSteps, &ReportStep::rs));
+        }
+
+        if (hasAnyValues(data.reportSteps, &ReportStep::rv)) {
+            output.write("FLXRV", flattenVectors(data.reportSteps, &ReportStep::rv));
+        }
 
         if (data.header.hasTemperature) {
             output.write("FLXTEMP", flattenVectors(data.reportSteps, &ReportStep::temperature));
@@ -248,6 +275,26 @@ FluxFile::Data FluxFile::read(const std::string& filename, bool preload)
         OPM_THROW(std::runtime_error,
                   fmt::format("Unsupported FLUXHEAD version {} in '{}'; expected {}",
                               data.header.version, filename, formatVersion()));
+    }
+
+    const auto fluxEnabled = (static_cast<int>(data.header.mode) & static_cast<int>(Mode::Flux)) != 0;
+    const auto pressureEnabled = (static_cast<int>(data.header.mode) & static_cast<int>(Mode::Pressure)) != 0;
+
+    if (fluxEnabled) {
+        requireArray<double>(file, "FLXRATE");
+    }
+
+    if (pressureEnabled) {
+        requireArray<double>(file, "FLXPRES");
+        if (data.header.hasPhase(Phase::Water)) {
+            requireArray<double>(file, "FLXSATW");
+        }
+        if (data.header.hasPhase(Phase::Gas)) {
+            requireArray<double>(file, "FLXSATG");
+        }
+        if (data.header.hasTemperature) {
+            requireArray<double>(file, "FLXTEMP");
+        }
     }
 
     const auto& fluxnams = file.get<std::string>("FLUXNAMS");
@@ -381,6 +428,12 @@ void FluxFile::validateForWrite(const Data& data)
                               data.header.numReportSteps, data.reportSteps.size()));
     }
 
+    if (data.header.numPhases != std::popcount(static_cast<unsigned int>(data.header.phaseMask))) {
+        OPM_THROW(std::invalid_argument,
+                  fmt::format("Header numPhases {} does not match phaseMask 0x{:x}",
+                              data.header.numPhases, data.header.phaseMask));
+    }
+
     const auto fluxEnabled = (static_cast<int>(data.header.mode) & static_cast<int>(Mode::Flux)) != 0;
     const auto pressureEnabled = (static_cast<int>(data.header.mode) & static_cast<int>(Mode::Pressure)) != 0;
     const auto perFaceValues = static_cast<std::size_t>(data.header.numBoundaryFaces);
@@ -403,10 +456,28 @@ void FluxFile::validateForWrite(const Data& data)
             };
 
             checkSize(step.pressures, "FLXPRES");
-            checkSize(step.swat, "FLXSATW");
-            checkSize(step.sgas, "FLXSATG");
-            checkSize(step.rs, "FLXRS");
-            checkSize(step.rv, "FLXRV");
+
+            if (data.header.hasPhase(Phase::Water)) {
+                checkSize(step.swat, "FLXSATW");
+            }
+            else if (!step.swat.empty()) {
+                OPM_THROW(std::invalid_argument, "Water saturation values provided, but water is not active");
+            }
+
+            if (data.header.hasPhase(Phase::Gas)) {
+                checkSize(step.sgas, "FLXSATG");
+            }
+            else if (!step.sgas.empty()) {
+                OPM_THROW(std::invalid_argument, "Gas saturation values provided, but gas is not active");
+            }
+
+            if (!step.rs.empty()) {
+                checkSize(step.rs, "FLXRS");
+            }
+
+            if (!step.rv.empty()) {
+                checkSize(step.rv, "FLXRV");
+            }
 
             if (data.header.hasTemperature) {
                 checkSize(step.temperature, "FLXTEMP");
@@ -442,6 +513,12 @@ void FluxFile::validateAfterRead(const Data& data)
         OPM_THROW(std::runtime_error,
                   fmt::format("Report step count {} does not match FLUXHEAD numReportSteps {}",
                               data.reportSteps.size(), data.header.numReportSteps));
+    }
+
+    if (data.header.numPhases != std::popcount(static_cast<unsigned int>(data.header.phaseMask))) {
+        OPM_THROW(std::runtime_error,
+                  fmt::format("FLUXHEAD numPhases {} does not match phaseMask 0x{:x}",
+                              data.header.numPhases, data.header.phaseMask));
     }
 }
 

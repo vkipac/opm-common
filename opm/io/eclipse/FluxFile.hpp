@@ -27,6 +27,12 @@ namespace Opm::EclIO {
 class FluxFile
 {
 public:
+    enum class Phase : int {
+        Oil = 1,
+        Water = 2,
+        Gas = 4,
+    };
+
     enum class Mode : int {
         Flux = 1,
         Pressure = 2,
@@ -53,11 +59,17 @@ public:
         int numBoundaryFaces = 0;
         int numReportSteps = 0;
         int numPhases = 0;
+        int phaseMask = 0;
         bool hasTemperature = false;
         Mode mode = Mode::Flux;
         Sampling sampling = Sampling::Averaged;
 
         bool operator==(const Header& other) const;
+
+        bool hasPhase(Phase phase) const
+        {
+            return (this->phaseMask & static_cast<int>(phase)) != 0;
+        }
     };
 
     struct BoundaryFace {
