@@ -124,6 +124,11 @@ namespace {
         return "FLUX";
     }
 
+    bool parseUseFlux(const Opm::GRIDSection& grid)
+    {
+        return grid.hasKeyword<Opm::ParserKeywords::USEFLUX>();
+    }
+
     bool normalize_case(std::string& s)
     {
         int upper_count = 0;
@@ -197,6 +202,7 @@ namespace Opm {
 
         result.m_UNIFIN = true;
         result.m_UNIFOUT = true;
+        result.m_use_flux = false;
         result.m_flux_type = "FLUX";
 
         result.m_output_enabled = false;
@@ -217,6 +223,7 @@ namespace Opm {
         , m_FMTOUT             (runspec.hasKeyword<ParserKeywords::FMTOUT>())
         , m_nosim              (nosim)
         , m_write_all_multminus(write_all_trans_multipliers(runspec))
+        , m_use_flux           (parseUseFlux(grid))
         , m_flux_type          (parseFluxType(grid))
     {
         this->setBaseName(basename(input_path));
@@ -289,6 +296,11 @@ namespace Opm {
     bool IOConfig::getFMTOUT() const
     {
         return m_FMTOUT;
+    }
+
+    bool IOConfig::getUseFlux() const
+    {
+        return this->m_use_flux;
     }
 
     const std::string& IOConfig::getFluxType() const
@@ -402,6 +414,7 @@ namespace Opm {
             && (this->initOnly() == data.initOnly())
             && (this->getBaseName() == data.getBaseName())
             && (this->getEclCompatibleRST() == data.getEclCompatibleRST())
+                && (this->getUseFlux() == data.getUseFlux())
                 && (this->getFluxType() == data.getFluxType())
             ;
     }

@@ -213,6 +213,7 @@ DATES
     BOOST_CHECK( !ioConfig.getFMTIN() );
     /*If no FMTOUT keyword is specified, verify FMTOUT false (default is unformatted) */
     BOOST_CHECK( !ioConfig.getFMTOUT() );
+    BOOST_CHECK( !ioConfig.getUseFlux() );
 }
 
 BOOST_AUTO_TEST_CASE(OutputProperties) {
@@ -339,6 +340,23 @@ SCHEDULE
     IOConfig ioConfig(deck);
 
     BOOST_CHECK_EQUAL(ioConfig.getFluxType(), "BOTH");
+}
+
+BOOST_AUTO_TEST_CASE(UseFluxIsDetectedFromGridSection)
+{
+    const char* data = R"(
+RUNSPEC
+DIMENS
+ 10 10 10 /
+GRID
+USEFLUX /
+SCHEDULE
+)";
+
+    const auto deck = Parser().parseString(data);
+    IOConfig ioConfig(deck);
+
+    BOOST_CHECK(ioConfig.getUseFlux());
 }
 
 BOOST_AUTO_TEST_CASE(InvalidFluxTypeFallsBackToFlux)
