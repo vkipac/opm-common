@@ -306,3 +306,55 @@ BOOST_AUTO_TEST_CASE(OutputPaths) {
     BOOST_CHECK_EQUAL( "TESTSTRING", config3.getBaseName() );
     BOOST_CHECK_EQUAL( testpath, config3.fullBasePath() );
 }
+
+BOOST_AUTO_TEST_CASE(DefaultFluxTypeIsFlux)
+{
+    const char* data = R"(
+RUNSPEC
+DIMENS
+ 10 10 10 /
+GRID
+SCHEDULE
+)";
+
+    const auto deck = Parser().parseString(data);
+    IOConfig ioConfig(deck);
+
+    BOOST_CHECK_EQUAL(ioConfig.getFluxType(), "FLUX");
+}
+
+BOOST_AUTO_TEST_CASE(FluxTypeIsNormalizedToUpperCase)
+{
+    const char* data = R"(
+RUNSPEC
+DIMENS
+ 10 10 10 /
+GRID
+FLUXTYPE
+ both /
+SCHEDULE
+)";
+
+    const auto deck = Parser().parseString(data);
+    IOConfig ioConfig(deck);
+
+    BOOST_CHECK_EQUAL(ioConfig.getFluxType(), "BOTH");
+}
+
+BOOST_AUTO_TEST_CASE(InvalidFluxTypeFallsBackToFlux)
+{
+    const char* data = R"(
+RUNSPEC
+DIMENS
+ 10 10 10 /
+GRID
+FLUXTYPE
+ banana /
+SCHEDULE
+)";
+
+    const auto deck = Parser().parseString(data);
+    IOConfig ioConfig(deck);
+
+    BOOST_CHECK_EQUAL(ioConfig.getFluxType(), "FLUX");
+}
