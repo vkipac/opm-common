@@ -96,6 +96,34 @@ namespace {
         }
     }
 
+    std::string parseFluxType(const Opm::GRIDSection& grid)
+    {
+        if (!grid.hasKeyword<Opm::ParserKeywords::FLUXTYPE>()) {
+            return "FLUX";
+        }
+
+        auto mode = grid.get<Opm::ParserKeywords::FLUXTYPE>()
+            .back()
+            .getRecord(0)
+            .getItem<Opm::ParserKeywords::FLUXTYPE::BC_TYPE>()
+            .getTrimmedString(0);
+
+        std::ranges::transform(mode,
+                               mode.begin(),
+                               [](const unsigned char c)
+                               {
+                                   return static_cast<char>(std::toupper(c));
+                               });
+
+        if (mode == "FLUX" || mode == "PRESSURE" || mode == "BOTH") {
+            return mode;
+        }
+
+        Opm::OpmLog::warning("Unrecognized FLUXTYPE BC_TYPE value '" + mode
+                             + "', defaulting to FLUX output mode");
+        return "FLUX";
+    }
+
     bool normalize_case(std::string& s)
     {
         int upper_count = 0;
@@ -169,6 +197,7 @@ namespace Opm {
 
         result.m_UNIFIN = true;
         result.m_UNIFOUT = true;
+        result.m_flux_type = "FLUX";
 
         result.m_output_enabled = false;
         result.ecl_compatible_rst = false;
@@ -188,6 +217,7 @@ namespace Opm {
         , m_FMTOUT             (runspec.hasKeyword<ParserKeywords::FMTOUT>())
         , m_nosim              (nosim)
         , m_write_all_multminus(write_all_trans_multipliers(runspec))
+        , m_flux_type          (parseFluxType(grid))
     {
         this->setBaseName(basename(input_path));
 
@@ -259,6 +289,11 @@ namespace Opm {
     bool IOConfig::getFMTOUT() const
     {
         return m_FMTOUT;
+    }
+
+    const std::string& IOConfig::getFluxType() const
+    {
+        return this->m_flux_type;
     }
 
     std::string IOConfig::getRestartFileName(const std::string& restart_base,
@@ -367,6 +402,7 @@ namespace Opm {
             && (this->initOnly() == data.initOnly())
             && (this->getBaseName() == data.getBaseName())
             && (this->getEclCompatibleRST() == data.getEclCompatibleRST())
+                && (this->getFluxType() == data.getFluxType())
             ;
     }
 
