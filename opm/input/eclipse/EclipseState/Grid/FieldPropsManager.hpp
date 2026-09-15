@@ -19,6 +19,8 @@
 #ifndef FIELDPROPS_MANAGER_HPP
 #define FIELDPROPS_MANAGER_HPP
 
+#include <opm/input/eclipse/EclipseState/Grid/FieldProps.hpp>
+
 #include <memory>
 #include <string>
 #include <string_view>
@@ -34,7 +36,6 @@ namespace Fieldprops {
 class TranCalculator;
 template<typename T> struct FieldData;
 }
-class FieldProps;
 class Phases;
 class TableManager;
 class NumericalAquifers;
@@ -54,6 +55,7 @@ public:
     void deleteMINPVV();
     const std::string& default_region() const;
     virtual std::vector<int> actnum() const;
+    const std::vector<int>& actnumRaw() const { return this->fp->actnumRaw(); }
     virtual std::vector<double> porv(bool global = false) const;
 
 
