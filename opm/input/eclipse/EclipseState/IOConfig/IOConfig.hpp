@@ -157,6 +157,8 @@ namespace Opm {
         bool getFMTIN() const;
         bool getFMTOUT() const;
         bool getUseFlux() const;
+        const std::string& getUseFluxBaseName() const;
+        std::string getUseFluxInputBaseName() const;
         const std::string& getFluxType() const;
 
         bool writeAllTransMultipliers() const
@@ -208,6 +210,7 @@ namespace Opm {
             serializer(m_UNIFIN);
             serializer(m_UNIFOUT);
             serializer(m_use_flux);
+            serializer(m_use_flux_base_name);
             serializer(m_flux_type);
 
             serializer(m_output_enabled);
@@ -237,6 +240,7 @@ namespace Opm {
         bool m_UNIFIN { false };
         bool m_UNIFOUT { false };
         bool m_use_flux { false };
+        std::string m_use_flux_base_name {};
         std::string m_flux_type { "FLUX" };
 
         bool m_output_enabled { true };

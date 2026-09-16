@@ -349,7 +349,8 @@ RUNSPEC
 DIMENS
  10 10 10 /
 GRID
-USEFLUX /
+USEFLUX
+ 1* /
 SCHEDULE
 )";
 
@@ -357,6 +358,46 @@ SCHEDULE
     IOConfig ioConfig(deck);
 
     BOOST_CHECK(ioConfig.getUseFlux());
+}
+
+BOOST_AUTO_TEST_CASE(UseFluxBaseNameDefaultsToDeckBaseName)
+{
+    const char* data = R"(
+RUNSPEC
+DIMENS
+ 10 10 10 /
+GRID
+USEFLUX
+ 1* /
+SCHEDULE
+)";
+
+    const auto deck = Parser().parseString(data);
+    IOConfig ioConfig(deck);
+
+    BOOST_CHECK(ioConfig.getUseFlux());
+    BOOST_CHECK(ioConfig.getUseFluxBaseName().empty());
+    BOOST_CHECK_EQUAL(ioConfig.getUseFluxInputBaseName(), ioConfig.getBaseName());
+}
+
+BOOST_AUTO_TEST_CASE(UseFluxBaseNameCanBeOverridden)
+{
+    const char* data = R"(
+RUNSPEC
+DIMENS
+ 10 10 10 /
+GRID
+USEFLUX
+ parent_case /
+SCHEDULE
+)";
+
+    const auto deck = Parser().parseString(data);
+    IOConfig ioConfig(deck);
+
+    BOOST_CHECK(ioConfig.getUseFlux());
+    BOOST_CHECK_EQUAL(ioConfig.getUseFluxBaseName(), "parent_case");
+    BOOST_CHECK_EQUAL(ioConfig.getUseFluxInputBaseName(), "parent_case");
 }
 
 BOOST_AUTO_TEST_CASE(InvalidFluxTypeFallsBackToFlux)

@@ -129,6 +129,19 @@ namespace {
         return grid.hasKeyword<Opm::ParserKeywords::USEFLUX>();
     }
 
+    std::string parseUseFluxBaseName(const Opm::GRIDSection& grid)
+    {
+        if (!grid.hasKeyword<Opm::ParserKeywords::USEFLUX>()) {
+            return {};
+        }
+
+        return grid.get<Opm::ParserKeywords::USEFLUX>()
+            .back()
+            .getRecord(0)
+            .getItem<Opm::ParserKeywords::USEFLUX::FLUX_BASENAME>()
+            .getTrimmedString(0);
+    }
+
     bool normalize_case(std::string& s)
     {
         int upper_count = 0;
@@ -203,6 +216,7 @@ namespace Opm {
         result.m_UNIFIN = true;
         result.m_UNIFOUT = true;
         result.m_use_flux = false;
+        result.m_use_flux_base_name = "";
         result.m_flux_type = "FLUX";
 
         result.m_output_enabled = false;
@@ -224,6 +238,7 @@ namespace Opm {
         , m_nosim              (nosim)
         , m_write_all_multminus(write_all_trans_multipliers(runspec))
         , m_use_flux           (parseUseFlux(grid))
+        , m_use_flux_base_name (parseUseFluxBaseName(grid))
         , m_flux_type          (parseFluxType(grid))
     {
         this->setBaseName(basename(input_path));
@@ -301,6 +316,16 @@ namespace Opm {
     bool IOConfig::getUseFlux() const
     {
         return this->m_use_flux;
+    }
+
+    const std::string& IOConfig::getUseFluxBaseName() const
+    {
+        return this->m_use_flux_base_name;
+    }
+
+    std::string IOConfig::getUseFluxInputBaseName() const
+    {
+        return this->m_use_flux_base_name.empty() ? this->getBaseName() : this->m_use_flux_base_name;
     }
 
     const std::string& IOConfig::getFluxType() const
@@ -415,6 +440,7 @@ namespace Opm {
             && (this->getBaseName() == data.getBaseName())
             && (this->getEclCompatibleRST() == data.getEclCompatibleRST())
                 && (this->getUseFlux() == data.getUseFlux())
+                && (this->getUseFluxBaseName() == data.getUseFluxBaseName())
                 && (this->getFluxType() == data.getFluxType())
             ;
     }
