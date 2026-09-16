@@ -400,6 +400,29 @@ SCHEDULE
     BOOST_CHECK_EQUAL(ioConfig.getUseFluxInputBaseName(), "parent_case");
 }
 
+BOOST_AUTO_TEST_CASE(UseFluxRegionsCanBeParsedFromFluxreg)
+{
+    const char* data = R"(
+RUNSPEC
+DIMENS
+ 10 10 10 /
+GRID
+FLUXREG
+ 1 3 7 /
+USEFLUX
+ 1* /
+SCHEDULE
+)";
+
+    const auto deck = Parser().parseString(data);
+    IOConfig ioConfig(deck);
+
+    BOOST_REQUIRE_EQUAL(ioConfig.getUseFluxRegions().size(), 3U);
+    BOOST_CHECK_EQUAL(ioConfig.getUseFluxRegions()[0], 1);
+    BOOST_CHECK_EQUAL(ioConfig.getUseFluxRegions()[1], 3);
+    BOOST_CHECK_EQUAL(ioConfig.getUseFluxRegions()[2], 7);
+}
+
 BOOST_AUTO_TEST_CASE(InvalidFluxTypeFallsBackToFlux)
 {
     const char* data = R"(

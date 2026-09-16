@@ -170,7 +170,6 @@ static const std::unordered_map<std::string, keyword_info<double>> double_keywor
 
 static const std::unordered_map<std::string, keyword_info<int>> int_keywords = {{"ACTNUM",  keyword_info<int>{}.init(1)},
                                                                                 {"FLUXNUM", keyword_info<int>{}},
-                                                                                {"FLUXREG", keyword_info<int>{}},
                                                                                 {"ISOLNUM", keyword_info<int>{}.init(1)},
                                                                                 {"MULTNUM", keyword_info<int>{}.init(1)},
                                                                                 {"OPERNUM", keyword_info<int>{}},

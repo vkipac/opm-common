@@ -142,6 +142,20 @@ namespace {
             .getTrimmedString(0);
     }
 
+    std::vector<int> parseUseFluxRegions(const Opm::GRIDSection& grid)
+    {
+        if (!grid.hasKeyword<Opm::ParserKeywords::FLUXREG>()) {
+            return {};
+        }
+
+        const auto& item = grid.get<Opm::ParserKeywords::FLUXREG>()
+            .back()
+            .getRecord(0)
+            .getItem<Opm::ParserKeywords::FLUXREG::REGIONS>();
+
+        return item.getData<int>();
+    }
+
     bool normalize_case(std::string& s)
     {
         int upper_count = 0;
@@ -217,6 +231,7 @@ namespace Opm {
         result.m_UNIFOUT = true;
         result.m_use_flux = false;
         result.m_use_flux_base_name = "";
+        result.m_use_flux_regions = {};
         result.m_flux_type = "FLUX";
 
         result.m_output_enabled = false;
@@ -239,6 +254,7 @@ namespace Opm {
         , m_write_all_multminus(write_all_trans_multipliers(runspec))
         , m_use_flux           (parseUseFlux(grid))
         , m_use_flux_base_name (parseUseFluxBaseName(grid))
+        , m_use_flux_regions   (parseUseFluxRegions(grid))
         , m_flux_type          (parseFluxType(grid))
     {
         this->setBaseName(basename(input_path));
@@ -326,6 +342,11 @@ namespace Opm {
     std::string IOConfig::getUseFluxInputBaseName() const
     {
         return this->m_use_flux_base_name.empty() ? this->getBaseName() : this->m_use_flux_base_name;
+    }
+
+    const std::vector<int>& IOConfig::getUseFluxRegions() const
+    {
+        return this->m_use_flux_regions;
     }
 
     const std::string& IOConfig::getFluxType() const
@@ -441,6 +462,7 @@ namespace Opm {
             && (this->getEclCompatibleRST() == data.getEclCompatibleRST())
                 && (this->getUseFlux() == data.getUseFlux())
                 && (this->getUseFluxBaseName() == data.getUseFluxBaseName())
+                && (this->getUseFluxRegions() == data.getUseFluxRegions())
                 && (this->getFluxType() == data.getFluxType())
             ;
     }
