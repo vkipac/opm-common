@@ -64,6 +64,24 @@ public:
         Mode mode = Mode::Flux;
         Sampling sampling = Sampling::Averaged;
 
+        /// Number of embedded parent summary vectors.  Matches
+        /// Data::summaryKeys.size().
+        int numSummaryKeys = 0;
+
+        /// Number of embedded parent summary samples.  Matches
+        /// Data::summarySamples.size().
+        int numSummarySamples = 0;
+
+        /// Whether the summary samples were taken at sub-report-step
+        /// resolution.  False means summary data, if any, is only available
+        /// at report-step boundaries.
+        bool summaryPerTimestep = false;
+
+        /// Minimum time, in seconds, that the producer enforced between
+        /// consecutive summary samples.  Zero means every time step was
+        /// sampled.  Diagnostic only.
+        double summaryMinSampleInterval = 0.0;
+
         bool operator==(const Header& other) const;
 
         bool hasPhase(Phase phase) const
@@ -95,9 +113,31 @@ public:
         std::vector<double> rs;
         std::vector<double> rv;
         std::vector<double> temperature;
-        std::vector<double> summaryValues;
 
         bool operator==(const ReportStep& other) const;
+    };
+
+    /// One snapshot of the parent run's summary vectors.
+    ///
+    /// Samples are independent of the report-step sequence: the producer
+    /// emits one per time step, subject to a minimum interval between
+    /// consecutive samples.
+    struct SummarySample {
+        /// End time, in seconds, of the interval this sample represents.
+        double time = 0.0;
+
+        /// One entry per Data::summaryKeys, in the same order.
+        ///
+        /// Entries whose keyword is of summary type Rate hold the
+        /// TIME-AVERAGE over the interval since the previous sample (or
+        /// since t = 0 for the first sample), so that holding the value
+        /// piecewise-constant across that interval reproduces the parent's
+        /// production over it exactly.  All other entries -- Total,
+        /// Pressure, Ratio, ProdIndex, Mode and Count -- hold the
+        /// instantaneous value at 'time'.
+        std::vector<double> values;
+
+        bool operator==(const SummarySample& other) const;
     };
 
     struct Data {
@@ -107,13 +147,14 @@ public:
         std::vector<BoundaryFace> boundaryFaces;
         std::vector<std::string> summaryKeys;
         std::vector<ReportStep> reportSteps;
+        std::vector<SummarySample> summarySamples;
 
         bool operator==(const Data& other) const;
     };
 
     static constexpr int formatVersion()
     {
-        return 1;
+        return 2;
     }
 
     static void write(const std::string& filename, bool formatted, const Data& data);

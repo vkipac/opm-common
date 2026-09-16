@@ -57,6 +57,10 @@ Opm::EclIO::FluxFile::Data sampleData()
     data.header.hasTemperature = true;
     data.header.mode = FluxFile::Mode::Both;
     data.header.sampling = FluxFile::Sampling::Averaged;
+    data.header.numSummaryKeys = 2;
+    data.header.numSummarySamples = 3;
+    data.header.summaryPerTimestep = true;
+    data.header.summaryMinSampleInterval = 86400.0;
 
     data.names = {"BASE", "REGION_2", "METRIC"};
     data.localToGlobal = {248, 249, 268, -1};
@@ -78,7 +82,6 @@ Opm::EclIO::FluxFile::Data sampleData()
             {100.0, 110.0},
             {5.0, 6.0},
             {330.0, 331.0},
-            {1000.0, 2000.0},
         },
         {
             1,
@@ -92,8 +95,15 @@ Opm::EclIO::FluxFile::Data sampleData()
             {120.0, 130.0},
             {7.0, 8.0},
             {332.0, 333.0},
-            {1100.0, 2100.0},
         },
+    };
+
+    // Summary samples are deliberately independent of the report-step
+    // sequence: three samples spanning two report steps.
+    data.summarySamples = {
+        {0.5, {1000.0, 2000.0}},
+        {10.0, {1100.0, 2100.0}},
+        {28.5, {1200.0, 2200.0}},
     };
 
     return data;
@@ -163,7 +173,7 @@ BOOST_AUTO_TEST_CASE(RejectsUnsupportedVersion)
     WorkArea work;
 
     Opm::EclIO::EclOutput output("BADVERSION.FLUX", false);
-    output.write("FLUXHEAD", std::vector<int>{99, 20, 30, 10, 2, 9, 1, 19, 10, 10, 4, 2, 1, 3, 0, 1, 1, 7});
+    output.write("FLUXHEAD", std::vector<int>{99, 20, 30, 10, 2, 9, 1, 19, 10, 10, 4, 2, 1, 3, 0, 1, 1, 7, 0, 0, 0});
     output.write("FLUXNAMS", std::vector<std::string>{"BASE", "REGION_2"}, 32);
     output.write("FLUXNCNT", std::vector<int>{2, 0});
     output.write("LOCGLOB", std::vector<int>{1, 2, 3, 4});
@@ -185,7 +195,7 @@ BOOST_AUTO_TEST_CASE(RejectsMissingRequiredArray)
     WorkArea work;
 
     Opm::EclIO::EclOutput output("MISSING.FLUX", false);
-    output.write("FLUXHEAD", std::vector<int>{1, 20, 30, 10, 2, 9, 1, 19, 10, 10, 4, 2, 1, 3, 0, 1, 1, 7});
+    output.write("FLUXHEAD", std::vector<int>{2, 20, 30, 10, 2, 9, 1, 19, 10, 10, 4, 2, 1, 3, 0, 1, 1, 7, 0, 0, 0});
     output.write("FLUXNAMS", std::vector<std::string>{"BASE", "REGION_2"}, 32);
     output.write("FLUXNCNT", std::vector<int>{2, 0});
     output.write("LOCGLOB", std::vector<int>{1, 2, 3, 4});
@@ -199,4 +209,90 @@ BOOST_AUTO_TEST_CASE(RejectsMissingRequiredArray)
     output.write("FLXRATE", std::vector<double>{1.0, 2.0, 3.0, 4.0, 5.0, 6.0});
 
     BOOST_CHECK_THROW(Opm::EclIO::FluxFile::read("MISSING.FLUX"), std::runtime_error);
+}
+
+BOOST_AUTO_TEST_CASE(SummarySamplesAreIndependentOfReportSteps)
+{
+    WorkArea work;
+
+    const auto written = sampleData();
+
+    // Three summary samples against two report steps: the sample series is
+    // sampled at sub-report-step resolution and must survive a round trip
+    // without being forced onto the report-step grid.
+    BOOST_REQUIRE_EQUAL(written.summarySamples.size(), 3U);
+    BOOST_REQUIRE_EQUAL(written.reportSteps.size(), 2U);
+
+    Opm::EclIO::FluxFile::write("SMRY.FLUX", false, written);
+
+    Opm::EclIO::EclFile file("SMRY.FLUX", Opm::EclIO::EclFile::Formatted{false}, true);
+    BOOST_CHECK(file.hasKey("SMRYTIME"));
+    BOOST_CHECK(file.hasKey("SMRYVALS"));
+    BOOST_CHECK(file.hasKey("SMRYMINT"));
+
+    const auto readBack = Opm::EclIO::FluxFile::read("SMRY.FLUX");
+    BOOST_CHECK(readBack == written);
+
+    BOOST_REQUIRE_EQUAL(readBack.summarySamples.size(), 3U);
+    BOOST_CHECK_CLOSE(readBack.summarySamples[1].time, 10.0, 1e-12);
+    BOOST_REQUIRE_EQUAL(readBack.summarySamples[1].values.size(), 2U);
+    BOOST_CHECK_CLOSE(readBack.summarySamples[1].values[0], 1100.0, 1e-12);
+    BOOST_CHECK_CLOSE(readBack.summarySamples[1].values[1], 2100.0, 1e-12);
+    BOOST_CHECK_CLOSE(readBack.header.summaryMinSampleInterval, 86400.0, 1e-12);
+    BOOST_CHECK(readBack.header.summaryPerTimestep);
+}
+
+BOOST_AUTO_TEST_CASE(RoundTripWithoutSummarySamples)
+{
+    WorkArea work;
+
+    auto written = sampleData();
+    written.summaryKeys.clear();
+    written.summarySamples.clear();
+    written.header.numSummaryKeys = 0;
+    written.header.numSummarySamples = 0;
+    written.header.summaryPerTimestep = false;
+    written.header.summaryMinSampleInterval = 0.0;
+
+    Opm::EclIO::FluxFile::write("NOSMRY.FLUX", false, written);
+
+    Opm::EclIO::EclFile file("NOSMRY.FLUX", Opm::EclIO::EclFile::Formatted{false}, true);
+    BOOST_CHECK(!file.hasKey("SMRYTIME"));
+    BOOST_CHECK(!file.hasKey("SMRYVALS"));
+
+    const auto readBack = Opm::EclIO::FluxFile::read("NOSMRY.FLUX");
+    BOOST_CHECK(readBack == written);
+}
+
+BOOST_AUTO_TEST_CASE(RejectsInconsistentSummarySampleWidth)
+{
+    WorkArea work;
+
+    auto data = sampleData();
+    data.summarySamples[1].values.pop_back();
+
+    BOOST_CHECK_THROW(Opm::EclIO::FluxFile::write("BADWIDTH.FLUX", false, data),
+                      std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(RejectsDecreasingSummarySampleTimes)
+{
+    WorkArea work;
+
+    auto data = sampleData();
+    data.summarySamples[2].time = data.summarySamples[1].time - 1.0;
+
+    BOOST_CHECK_THROW(Opm::EclIO::FluxFile::write("BADTIME.FLUX", false, data),
+                      std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(RejectsSummarySampleCountMismatch)
+{
+    WorkArea work;
+
+    auto data = sampleData();
+    data.header.numSummarySamples = 99;
+
+    BOOST_CHECK_THROW(Opm::EclIO::FluxFile::write("BADCOUNT.FLUX", false, data),
+                      std::invalid_argument);
 }

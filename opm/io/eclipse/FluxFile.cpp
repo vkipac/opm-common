@@ -27,6 +27,7 @@
 
 #include <array>
 #include <bit>
+#include <limits>
 #include <stdexcept>
 #include <type_traits>
 #include <utility>
@@ -43,7 +44,10 @@ constexpr int hasTemperatureIndex = 14;
 constexpr int modeIndex = 15;
 constexpr int samplingIndex = 16;
 constexpr int phaseMaskIndex = 17;
-constexpr int headerSize = 18;
+constexpr int numSummaryKeysIndex = 18;
+constexpr int numSummarySamplesIndex = 19;
+constexpr int summaryPerTimestepIndex = 20;
+constexpr int headerSize = 21;
 
 std::vector<int> makeHeader(const Opm::EclIO::FluxFile::Header& header)
 {
@@ -66,6 +70,9 @@ std::vector<int> makeHeader(const Opm::EclIO::FluxFile::Header& header)
         static_cast<int>(header.mode),
         static_cast<int>(header.sampling),
         header.phaseMask,
+        header.numSummaryKeys,
+        header.numSummarySamples,
+        header.summaryPerTimestep ? 1 : 0,
     };
 }
 
@@ -96,6 +103,9 @@ Opm::EclIO::FluxFile::Header parseHeader(const std::vector<int>& values)
     header.mode = static_cast<Opm::EclIO::FluxFile::Mode>(values[modeIndex]);
     header.sampling = static_cast<Opm::EclIO::FluxFile::Sampling>(values[samplingIndex]);
     header.phaseMask = values[phaseMaskIndex];
+    header.numSummaryKeys = values[numSummaryKeysIndex];
+    header.numSummarySamples = values[numSummarySamplesIndex];
+    header.summaryPerTimestep = values[summaryPerTimestepIndex] != 0;
     return header;
 }
 
@@ -164,6 +174,27 @@ std::vector<std::string> makeNames(const Opm::EclIO::FluxFile::Data& data)
     return names;
 }
 
+std::vector<double>
+flattenSummaryTimes(const std::vector<Opm::EclIO::FluxFile::SummarySample>& samples)
+{
+    std::vector<double> times;
+    times.reserve(samples.size());
+    for (const auto& sample : samples) {
+        times.push_back(sample.time);
+    }
+    return times;
+}
+
+std::vector<double>
+flattenSummaryValues(const std::vector<Opm::EclIO::FluxFile::SummarySample>& samples)
+{
+    std::vector<double> values;
+    for (const auto& sample : samples) {
+        values.insert(values.end(), sample.values.begin(), sample.values.end());
+    }
+    return values;
+}
+
 bool hasAnyValues(const std::vector<Opm::EclIO::FluxFile::ReportStep>& steps,
                   const std::vector<double> Opm::EclIO::FluxFile::ReportStep::* member)
 {
@@ -195,6 +226,8 @@ bool FluxFile::Header::operator==(const Header& other) const = default;
 bool FluxFile::BoundaryFace::operator==(const BoundaryFace& other) const = default;
 
 bool FluxFile::ReportStep::operator==(const ReportStep& other) const = default;
+
+bool FluxFile::SummarySample::operator==(const SummarySample& other) const = default;
 
 bool FluxFile::Data::operator==(const Data& other) const = default;
 
@@ -245,7 +278,9 @@ void FluxFile::write(const std::string& filename, bool formatted, const Data& da
     }
 
     if (!data.summaryKeys.empty()) {
-        output.write("SMRYVALS", flattenVectors(data.reportSteps, &ReportStep::summaryValues));
+        output.write("SMRYMINT", std::vector<double>{data.header.summaryMinSampleInterval});
+        output.write("SMRYTIME", flattenSummaryTimes(data.summarySamples));
+        output.write("SMRYVALS", flattenSummaryValues(data.summarySamples));
     }
 
     output.flushStream();
@@ -344,7 +379,12 @@ FluxFile::Data FluxFile::read(const std::string& filename, bool preload)
     const auto& rs = optionalArray<double>(file, "FLXRS");
     const auto& rv = optionalArray<double>(file, "FLXRV");
     const auto& temperature = optionalArray<double>(file, "FLXTEMP");
+    const auto& summaryTimes = optionalArray<double>(file, "SMRYTIME");
     const auto& summaryValues = optionalArray<double>(file, "SMRYVALS");
+    const auto& summaryMinInterval = optionalArray<double>(file, "SMRYMINT");
+
+    data.header.summaryMinSampleInterval =
+        summaryMinInterval.empty() ? 0.0 : summaryMinInterval.front();
 
     data.reportSteps.resize(reportSteps.size());
     auto splitPerStep = [&](const std::vector<double>& flat, std::size_t perStep, auto setter, const std::string& name) {
@@ -394,9 +434,29 @@ FluxFile::Data FluxFile::read(const std::string& filename, bool preload)
     splitPerStep(temperature, perFaceValues,
                  [](ReportStep& step, std::vector<double> values) { step.temperature = std::move(values); },
                  "FLXTEMP");
-    splitPerStep(summaryValues, perSummaryValues,
-                 [](ReportStep& step, std::vector<double> values) { step.summaryValues = std::move(values); },
-                 "SMRYVALS");
+
+    if (!summaryTimes.empty() || !summaryValues.empty()) {
+        if (perSummaryValues == 0) {
+            OPM_THROW(std::runtime_error,
+                      "FLUX file contains summary samples but no summary keys");
+        }
+
+        if (summaryValues.size() != perSummaryValues * summaryTimes.size()) {
+            OPM_THROW(std::runtime_error,
+                      fmt::format("SMRYVALS size {} does not match {} keys x {} samples",
+                                  summaryValues.size(), perSummaryValues, summaryTimes.size()));
+        }
+
+        data.summarySamples.resize(summaryTimes.size());
+        for (std::size_t sample = 0; sample < summaryTimes.size(); ++sample) {
+            const auto begin = summaryValues.begin()
+                + static_cast<std::ptrdiff_t>(sample * perSummaryValues);
+
+            data.summarySamples[sample].time = summaryTimes[sample];
+            data.summarySamples[sample].values
+                .assign(begin, begin + static_cast<std::ptrdiff_t>(perSummaryValues));
+        }
+    }
 
     validateAfterRead(data);
     return data;
@@ -486,12 +546,40 @@ void FluxFile::validateForWrite(const Data& data)
                 OPM_THROW(std::invalid_argument, "Temperature values provided, but header.hasTemperature is false");
             }
         }
+    }
 
-        if (step.summaryValues.size() != data.summaryKeys.size()) {
+    if (data.header.numSummaryKeys != static_cast<int>(data.summaryKeys.size())) {
+        OPM_THROW(std::invalid_argument,
+                  fmt::format("Header numSummaryKeys {} does not match summary key count {}",
+                              data.header.numSummaryKeys, data.summaryKeys.size()));
+    }
+
+    if (data.header.numSummarySamples != static_cast<int>(data.summarySamples.size())) {
+        OPM_THROW(std::invalid_argument,
+                  fmt::format("Header numSummarySamples {} does not match summary sample count {}",
+                              data.header.numSummarySamples, data.summarySamples.size()));
+    }
+
+    if (!data.summarySamples.empty() && data.summaryKeys.empty()) {
+        OPM_THROW(std::invalid_argument,
+                  "Summary samples provided, but no summary keys are defined");
+    }
+
+    auto previousTime = -std::numeric_limits<double>::max();
+    for (const auto& sample : data.summarySamples) {
+        if (sample.values.size() != data.summaryKeys.size()) {
             OPM_THROW(std::invalid_argument,
-                      fmt::format("Each SMRYVALS step must contain {} values, got {}",
-                                  data.summaryKeys.size(), step.summaryValues.size()));
+                      fmt::format("Each summary sample must contain {} values, got {}",
+                                  data.summaryKeys.size(), sample.values.size()));
         }
+
+        if (sample.time < previousTime) {
+            OPM_THROW(std::invalid_argument,
+                      fmt::format("Summary sample times must be non-decreasing, "
+                                  "got {} after {}", sample.time, previousTime));
+        }
+
+        previousTime = sample.time;
     }
 }
 
@@ -519,6 +607,18 @@ void FluxFile::validateAfterRead(const Data& data)
         OPM_THROW(std::runtime_error,
                   fmt::format("FLUXHEAD numPhases {} does not match phaseMask 0x{:x}",
                               data.header.numPhases, data.header.phaseMask));
+    }
+
+    if (data.header.numSummaryKeys != static_cast<int>(data.summaryKeys.size())) {
+        OPM_THROW(std::runtime_error,
+                  fmt::format("Summary key count {} does not match FLUXHEAD numSummaryKeys {}",
+                              data.summaryKeys.size(), data.header.numSummaryKeys));
+    }
+
+    if (data.header.numSummarySamples != static_cast<int>(data.summarySamples.size())) {
+        OPM_THROW(std::runtime_error,
+                  fmt::format("Summary sample count {} does not match FLUXHEAD numSummarySamples {}",
+                              data.summarySamples.size(), data.header.numSummarySamples));
     }
 }
 
