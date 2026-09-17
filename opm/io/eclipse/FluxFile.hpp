@@ -184,6 +184,32 @@ public:
         /// phase, same layout as \c relPerm, and written alongside it.
         std::vector<double> capPressure;
 
+        /// Reference-phase pressure of the INTERIOR cell, one per boundary
+        /// face, averaged over the record's window like \c rates.
+        ///
+        /// Written in Flux mode, together with \c massRateDerivative, so that
+        /// a consumer can correct the prescribed rate for its own drift. The
+        /// interior cell exists in both runs, which is what makes the pair
+        /// usable.
+        std::vector<double> interiorPressure;
+
+        /// Derivative of the component mass rate with respect to the pressure
+        /// difference across the face, same face-major layout as \c massRates,
+        /// and non-negative.
+        ///
+        /// This is the conductance the producing run saw, mobility times
+        /// transmissibility carried through the component split. A consumer
+        /// applies
+        ///
+        ///     m = massRates + massRateDerivative * (interiorPressure - p)
+        ///
+        /// with p its own interior pressure. The term vanishes when the
+        /// reduced run reproduces the parent, and otherwise pushes it back:
+        /// a prescribed rate on its own fixes the mass crossing the boundary
+        /// but leaves the pressure free to drift, because nothing couples the
+        /// two.
+        std::vector<double> massRateDerivative;
+
         bool operator==(const ReportStep& other) const;
     };
 
@@ -224,10 +250,12 @@ public:
 
     static constexpr int formatVersion()
     {
+        // 4: FLXPINT and FLXDMDP added, so a Flux-mode consumer can correct
+        //    the prescribed rate for its own pressure drift.
         // 3: FLXMASS holds component masses. Version 2 wrote phase masses
         //    there, which a consumer cannot split by Rs/Rv, so those files
         //    are rejected rather than silently misread.
-        return 3;
+        return 4;
     }
 
     static void write(const std::string& filename, bool formatted, const Data& data);

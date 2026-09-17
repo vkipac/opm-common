@@ -259,6 +259,14 @@ void FluxFile::write(const std::string& filename, bool formatted, const Data& da
         if (hasAnyValues(data.reportSteps, &ReportStep::massRates)) {
             output.write("FLXMASS", flattenVectors(data.reportSteps, &ReportStep::massRates));
         }
+
+        if (hasAnyValues(data.reportSteps, &ReportStep::interiorPressure)) {
+            output.write("FLXPINT", flattenVectors(data.reportSteps, &ReportStep::interiorPressure));
+        }
+
+        if (hasAnyValues(data.reportSteps, &ReportStep::massRateDerivative)) {
+            output.write("FLXDMDP", flattenVectors(data.reportSteps, &ReportStep::massRateDerivative));
+        }
     }
 
     if ((static_cast<int>(data.header.mode) & static_cast<int>(Mode::Pressure)) != 0) {
@@ -403,6 +411,8 @@ FluxFile::Data FluxFile::read(const std::string& filename, bool preload)
     const auto& temperature = optionalArray<double>(file, "FLXTEMP");
     const auto& relPerm = optionalArray<double>(file, "FLXKR");
     const auto& capPressure = optionalArray<double>(file, "FLXPC");
+    const auto& interiorPressure = optionalArray<double>(file, "FLXPINT");
+    const auto& massRateDerivative = optionalArray<double>(file, "FLXDMDP");
     const auto& summaryTimes = optionalArray<double>(file, "SMRYTIME");
     const auto& summaryValues = optionalArray<double>(file, "SMRYVALS");
     const auto& summaryMinInterval = optionalArray<double>(file, "SMRYMINT");
@@ -453,9 +463,15 @@ FluxFile::Data FluxFile::read(const std::string& filename, bool preload)
     splitPerStep(capPressure, perFacePhaseValues,
                  [](ReportStep& step, std::vector<double> values) { step.capPressure = std::move(values); },
                  "FLXPC");
+    splitPerStep(massRateDerivative, perFacePhaseValues,
+                 [](ReportStep& step, std::vector<double> values) { step.massRateDerivative = std::move(values); },
+                 "FLXDMDP");
     splitPerStep(pressures, perFaceValues,
                  [](ReportStep& step, std::vector<double> values) { step.pressures = std::move(values); },
                  "FLXPRES");
+    splitPerStep(interiorPressure, perFaceValues,
+                 [](ReportStep& step, std::vector<double> values) { step.interiorPressure = std::move(values); },
+                 "FLXPINT");
     splitPerStep(swat, perFaceValues,
                  [](ReportStep& step, std::vector<double> values) { step.swat = std::move(values); },
                  "FLXSATW");

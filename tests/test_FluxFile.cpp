@@ -197,7 +197,7 @@ BOOST_AUTO_TEST_CASE(RejectsMissingRequiredArray)
     WorkArea work;
 
     Opm::EclIO::EclOutput output("MISSING.FLUX", false);
-    output.write("FLUXHEAD", std::vector<int>{3, 20, 30, 10, 2, 9, 1, 19, 10, 10, 4, 2, 1, 3, 0, 1, 1, 7, 0, 0, 0, 0});
+    output.write("FLUXHEAD", std::vector<int>{4, 20, 30, 10, 2, 9, 1, 19, 10, 10, 4, 2, 1, 3, 0, 1, 1, 7, 0, 0, 0, 0});
     output.write("FLUXNAMS", std::vector<std::string>{"BASE", "REGION_2"}, 32);
     output.write("FLUXNCNT", std::vector<int>{2, 0});
     output.write("LOCGLOB", std::vector<int>{1, 2, 3, 4});
