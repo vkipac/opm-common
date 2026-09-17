@@ -2681,6 +2681,26 @@ bool SummaryConfig::hasKeyword(const std::string& keyword) const
     return short_keywords.find(keyword) != short_keywords.end();
 }
 
+SummaryConfig& SummaryConfig::addFieldKeyword(const std::string& keyword,
+                                              KeywordLocation    loc)
+{
+    if (this->hasKeyword(keyword)) {
+        return *this;
+    }
+
+    keywordF(this->m_keywords, keyword, std::move(loc));
+    uniq(this->m_keywords);
+
+    this->short_keywords.insert(keyword);
+    for (const auto& node : this->m_keywords) {
+        if (node.keyword() == keyword) {
+            this->summary_keywords.insert(node.uniqueNodeKey());
+        }
+    }
+
+    return *this;
+}
+
 bool SummaryConfig::hasSummaryKey(const std::string& keyword) const
 {
     return summary_keywords.find(keyword) != summary_keywords.end();
