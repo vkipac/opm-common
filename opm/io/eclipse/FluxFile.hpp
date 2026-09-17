@@ -105,6 +105,16 @@ public:
         int exteriorGlobalCell = -1;
         double transmissibility = 0.0;
 
+        /// PVT region of the cell on the far side of the face.
+        ///
+        /// A reduced run has no cell there, so without this it would have to
+        /// substitute its own region when evaluating the density, formation
+        /// volume factor and viscosity of an inflowing stream.
+        ///
+        /// Declared last so that existing aggregate initialisation of the
+        /// preceding members keeps working.
+        int exteriorPvtRegion = 0;
+
         bool operator==(const BoundaryFace& other) const;
     };
 
@@ -142,16 +152,37 @@ public:
         /// Component mass rates across each boundary face, in the same
         /// face-major layout as \c rates, positive into the sector.
         ///
-        /// The producing run forms these from its own flux and the UPWIND
-        /// phase density. A consumer can impose them directly, which matters
-        /// because for flow entering the sector the upstream cell lies outside
-        /// it, so the consumer would otherwise have to substitute its own
-        /// density. That substitution is also what makes a volumetric rate
-        /// sensitive to how the flow is distributed over time.
+        /// These are COMPONENT masses, not phase masses: the oil entry is the
+        /// mass of the oil component in both phases and the gas entry is the
+        /// mass of the gas component in both phases. The producing run forms
+        /// them from its own flux and the UPWIND cell's inverse formation
+        /// volume factor, Rs and Rv, using the INTERIOR cell's reference
+        /// densities so that the consumer's conversion back to surface volumes
+        /// is exact.
+        ///
+        /// A consumer can impose them directly. That matters because for flow
+        /// entering the sector the upstream cell lies outside it, so the
+        /// consumer would otherwise have to substitute its own state; and
+        /// because splitting a phase mass by Rs/Rv after the fact is not
+        /// possible without that state.
         ///
         /// Declared last so that existing aggregate initialisation of the
         /// preceding members keeps working. Empty when unavailable.
         std::vector<double> massRates;
+
+        /// Relative permeability of the exterior cell, face-major over the
+        /// active phases like \c rates.
+        ///
+        /// Written in Pressure mode. A reduced run needs these to form the
+        /// mobility of an inflowing stream: evaluating the saturation
+        /// functions of its own cell at the exterior saturations would use the
+        /// wrong SATNUM region, the wrong scaled end points and none of the
+        /// parent's hysteresis history.
+        std::vector<double> relPerm;
+
+        /// Capillary pressure of the exterior cell relative to the reference
+        /// phase, same layout as \c relPerm, and written alongside it.
+        std::vector<double> capPressure;
 
         bool operator==(const ReportStep& other) const;
     };
@@ -193,7 +224,10 @@ public:
 
     static constexpr int formatVersion()
     {
-        return 2;
+        // 3: FLXMASS holds component masses. Version 2 wrote phase masses
+        //    there, which a consumer cannot split by Rs/Rv, so those files
+        //    are rejected rather than silently misread.
+        return 3;
     }
 
     static void write(const std::string& filename, bool formatted, const Data& data);

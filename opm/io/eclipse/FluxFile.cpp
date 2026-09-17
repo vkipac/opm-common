@@ -247,6 +247,7 @@ void FluxFile::write(const std::string& filename, bool formatted, const Data& da
     output.write("FLUXDIR", flattenBoundary(data.boundaryFaces, &BoundaryFace::direction));
     output.write("FLUXNNC", flattenBoundary(data.boundaryFaces, &BoundaryFace::exteriorGlobalCell));
     output.write("FLUXTRAN", flattenBoundary(data.boundaryFaces, &BoundaryFace::transmissibility));
+    output.write("FLXPVTN", flattenBoundary(data.boundaryFaces, &BoundaryFace::exteriorPvtRegion));
     output.write("FLXSTEP", flattenStepMeta(data.reportSteps, &ReportStep::reportStep));
     output.write("FLXSIM", flattenStepMeta(data.reportSteps, &ReportStep::simStep));
     output.write("FLXTIME", flattenStepMeta(data.reportSteps, &ReportStep::startTime));
@@ -281,6 +282,14 @@ void FluxFile::write(const std::string& filename, bool formatted, const Data& da
 
         if (data.header.hasTemperature) {
             output.write("FLXTEMP", flattenVectors(data.reportSteps, &ReportStep::temperature));
+        }
+
+        if (hasAnyValues(data.reportSteps, &ReportStep::relPerm)) {
+            output.write("FLXKR", flattenVectors(data.reportSteps, &ReportStep::relPerm));
+        }
+
+        if (hasAnyValues(data.reportSteps, &ReportStep::capPressure)) {
+            output.write("FLXPC", flattenVectors(data.reportSteps, &ReportStep::capPressure));
         }
     }
 
@@ -369,8 +378,11 @@ FluxFile::Data FluxFile::read(const std::string& filename, bool preload)
     }
 
     data.boundaryFaces.reserve(fluxCell.size());
+    const auto& fluxPvtn = optionalArray<int>(file, "FLXPVTN");
     for (std::size_t index = 0; index < fluxCell.size(); ++index) {
-        data.boundaryFaces.push_back(BoundaryFace{fluxCell[index], fluxDir[index], fluxNnc[index], fluxTran[index]});
+        data.boundaryFaces.push_back(BoundaryFace{fluxCell[index], fluxDir[index], fluxNnc[index],
+                                                  fluxTran[index],
+                                                  (index < fluxPvtn.size()) ? fluxPvtn[index] : 0});
     }
 
     const auto& reportSteps = file.get<int>("FLXSTEP");
@@ -389,6 +401,8 @@ FluxFile::Data FluxFile::read(const std::string& filename, bool preload)
     const auto& rs = optionalArray<double>(file, "FLXRS");
     const auto& rv = optionalArray<double>(file, "FLXRV");
     const auto& temperature = optionalArray<double>(file, "FLXTEMP");
+    const auto& relPerm = optionalArray<double>(file, "FLXKR");
+    const auto& capPressure = optionalArray<double>(file, "FLXPC");
     const auto& summaryTimes = optionalArray<double>(file, "SMRYTIME");
     const auto& summaryValues = optionalArray<double>(file, "SMRYVALS");
     const auto& summaryMinInterval = optionalArray<double>(file, "SMRYMINT");
@@ -433,6 +447,12 @@ FluxFile::Data FluxFile::read(const std::string& filename, bool preload)
     splitPerStep(massRates, perFacePhaseValues,
                  [](ReportStep& step, std::vector<double> values) { step.massRates = std::move(values); },
                  "FLXMASS");
+    splitPerStep(relPerm, perFacePhaseValues,
+                 [](ReportStep& step, std::vector<double> values) { step.relPerm = std::move(values); },
+                 "FLXKR");
+    splitPerStep(capPressure, perFacePhaseValues,
+                 [](ReportStep& step, std::vector<double> values) { step.capPressure = std::move(values); },
+                 "FLXPC");
     splitPerStep(pressures, perFaceValues,
                  [](ReportStep& step, std::vector<double> values) { step.pressures = std::move(values); },
                  "FLXPRES");
