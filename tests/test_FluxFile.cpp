@@ -61,6 +61,8 @@ Opm::EclIO::FluxFile::Data sampleData()
     data.header.numSummarySamples = 3;
     data.header.summaryPerTimestep = true;
     data.header.summaryMinSampleInterval = 86400.0;
+    data.header.boundaryPerTimestep = true;
+    data.header.boundaryMinSampleInterval = 43200.0;
 
     data.names = {"BASE", "REGION_2", "METRIC"};
     data.localToGlobal = {248, 249, 268, -1};
@@ -173,7 +175,7 @@ BOOST_AUTO_TEST_CASE(RejectsUnsupportedVersion)
     WorkArea work;
 
     Opm::EclIO::EclOutput output("BADVERSION.FLUX", false);
-    output.write("FLUXHEAD", std::vector<int>{99, 20, 30, 10, 2, 9, 1, 19, 10, 10, 4, 2, 1, 3, 0, 1, 1, 7, 0, 0, 0});
+    output.write("FLUXHEAD", std::vector<int>{99, 20, 30, 10, 2, 9, 1, 19, 10, 10, 4, 2, 1, 3, 0, 1, 1, 7, 0, 0, 0, 0});
     output.write("FLUXNAMS", std::vector<std::string>{"BASE", "REGION_2"}, 32);
     output.write("FLUXNCNT", std::vector<int>{2, 0});
     output.write("LOCGLOB", std::vector<int>{1, 2, 3, 4});
@@ -195,7 +197,7 @@ BOOST_AUTO_TEST_CASE(RejectsMissingRequiredArray)
     WorkArea work;
 
     Opm::EclIO::EclOutput output("MISSING.FLUX", false);
-    output.write("FLUXHEAD", std::vector<int>{2, 20, 30, 10, 2, 9, 1, 19, 10, 10, 4, 2, 1, 3, 0, 1, 1, 7, 0, 0, 0});
+    output.write("FLUXHEAD", std::vector<int>{2, 20, 30, 10, 2, 9, 1, 19, 10, 10, 4, 2, 1, 3, 0, 1, 1, 7, 0, 0, 0, 0});
     output.write("FLUXNAMS", std::vector<std::string>{"BASE", "REGION_2"}, 32);
     output.write("FLUXNCNT", std::vector<int>{2, 0});
     output.write("LOCGLOB", std::vector<int>{1, 2, 3, 4});
@@ -240,6 +242,10 @@ BOOST_AUTO_TEST_CASE(SummarySamplesAreIndependentOfReportSteps)
     BOOST_CHECK_CLOSE(readBack.summarySamples[1].values[1], 2100.0, 1e-12);
     BOOST_CHECK_CLOSE(readBack.header.summaryMinSampleInterval, 86400.0, 1e-12);
     BOOST_CHECK(readBack.header.summaryPerTimestep);
+
+    // The boundary cadence metadata travels independently of the summary data.
+    BOOST_CHECK(readBack.header.boundaryPerTimestep);
+    BOOST_CHECK_CLOSE(readBack.header.boundaryMinSampleInterval, 43200.0, 1e-12);
 }
 
 BOOST_AUTO_TEST_CASE(RoundTripWithoutSummarySamples)
@@ -260,8 +266,12 @@ BOOST_AUTO_TEST_CASE(RoundTripWithoutSummarySamples)
     BOOST_CHECK(!file.hasKey("SMRYTIME"));
     BOOST_CHECK(!file.hasKey("SMRYVALS"));
 
+    // The boundary interval is written even when there is no summary payload.
+    BOOST_CHECK(file.hasKey("FLXMINT"));
+
     const auto readBack = Opm::EclIO::FluxFile::read("NOSMRY.FLUX");
     BOOST_CHECK(readBack == written);
+    BOOST_CHECK_CLOSE(readBack.header.boundaryMinSampleInterval, 43200.0, 1e-12);
 }
 
 BOOST_AUTO_TEST_CASE(RejectsInconsistentSummarySampleWidth)

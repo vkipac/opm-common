@@ -47,7 +47,8 @@ constexpr int phaseMaskIndex = 17;
 constexpr int numSummaryKeysIndex = 18;
 constexpr int numSummarySamplesIndex = 19;
 constexpr int summaryPerTimestepIndex = 20;
-constexpr int headerSize = 21;
+constexpr int boundaryPerTimestepIndex = 21;
+constexpr int headerSize = 22;
 
 std::vector<int> makeHeader(const Opm::EclIO::FluxFile::Header& header)
 {
@@ -73,6 +74,7 @@ std::vector<int> makeHeader(const Opm::EclIO::FluxFile::Header& header)
         header.numSummaryKeys,
         header.numSummarySamples,
         header.summaryPerTimestep ? 1 : 0,
+        header.boundaryPerTimestep ? 1 : 0,
     };
 }
 
@@ -106,6 +108,7 @@ Opm::EclIO::FluxFile::Header parseHeader(const std::vector<int>& values)
     header.numSummaryKeys = values[numSummaryKeysIndex];
     header.numSummarySamples = values[numSummarySamplesIndex];
     header.summaryPerTimestep = values[summaryPerTimestepIndex] != 0;
+    header.boundaryPerTimestep = values[boundaryPerTimestepIndex] != 0;
     return header;
 }
 
@@ -251,6 +254,10 @@ void FluxFile::write(const std::string& filename, bool formatted, const Data& da
 
     if ((static_cast<int>(data.header.mode) & static_cast<int>(Mode::Flux)) != 0) {
         output.write("FLXRATE", flattenVectors(data.reportSteps, &ReportStep::rates));
+
+        if (hasAnyValues(data.reportSteps, &ReportStep::massRates)) {
+            output.write("FLXMASS", flattenVectors(data.reportSteps, &ReportStep::massRates));
+        }
     }
 
     if ((static_cast<int>(data.header.mode) & static_cast<int>(Mode::Pressure)) != 0) {
@@ -276,6 +283,8 @@ void FluxFile::write(const std::string& filename, bool formatted, const Data& da
             output.write("FLXTEMP", flattenVectors(data.reportSteps, &ReportStep::temperature));
         }
     }
+
+    output.write("FLXMINT", std::vector<double>{data.header.boundaryMinSampleInterval});
 
     if (!data.summaryKeys.empty()) {
         output.write("SMRYMINT", std::vector<double>{data.header.summaryMinSampleInterval});
@@ -373,6 +382,7 @@ FluxFile::Data FluxFile::read(const std::string& filename, bool preload)
     }
 
     const auto& rates = optionalArray<double>(file, "FLXRATE");
+    const auto& massRates = optionalArray<double>(file, "FLXMASS");
     const auto& pressures = optionalArray<double>(file, "FLXPRES");
     const auto& swat = optionalArray<double>(file, "FLXSATW");
     const auto& sgas = optionalArray<double>(file, "FLXSATG");
@@ -382,9 +392,13 @@ FluxFile::Data FluxFile::read(const std::string& filename, bool preload)
     const auto& summaryTimes = optionalArray<double>(file, "SMRYTIME");
     const auto& summaryValues = optionalArray<double>(file, "SMRYVALS");
     const auto& summaryMinInterval = optionalArray<double>(file, "SMRYMINT");
+    const auto& boundaryMinInterval = optionalArray<double>(file, "FLXMINT");
 
     data.header.summaryMinSampleInterval =
         summaryMinInterval.empty() ? 0.0 : summaryMinInterval.front();
+
+    data.header.boundaryMinSampleInterval =
+        boundaryMinInterval.empty() ? 0.0 : boundaryMinInterval.front();
 
     data.reportSteps.resize(reportSteps.size());
     auto splitPerStep = [&](const std::vector<double>& flat, std::size_t perStep, auto setter, const std::string& name) {
@@ -416,6 +430,9 @@ FluxFile::Data FluxFile::read(const std::string& filename, bool preload)
     splitPerStep(rates, perFacePhaseValues,
                  [](ReportStep& step, std::vector<double> values) { step.rates = std::move(values); },
                  "FLXRATE");
+    splitPerStep(massRates, perFacePhaseValues,
+                 [](ReportStep& step, std::vector<double> values) { step.massRates = std::move(values); },
+                 "FLXMASS");
     splitPerStep(pressures, perFaceValues,
                  [](ReportStep& step, std::vector<double> values) { step.pressures = std::move(values); },
                  "FLXPRES");
@@ -504,6 +521,12 @@ void FluxFile::validateForWrite(const Data& data)
             OPM_THROW(std::invalid_argument,
                       fmt::format("Each FLXRATE step must contain {} values, got {}",
                                   perFacePhaseValues, step.rates.size()));
+        }
+
+        if (!step.massRates.empty() && (step.massRates.size() != perFacePhaseValues)) {
+            OPM_THROW(std::invalid_argument,
+                      fmt::format("Each FLXMASS step must contain {} values, got {}",
+                                  perFacePhaseValues, step.massRates.size()));
         }
 
         if (pressureEnabled) {

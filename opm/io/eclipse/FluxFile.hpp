@@ -82,6 +82,15 @@ public:
         /// sampled.  Diagnostic only.
         double summaryMinSampleInterval = 0.0;
 
+        /// Whether the boundary records were written at sub-report-step
+        /// resolution.  False means one record per report step.
+        bool boundaryPerTimestep = false;
+
+        /// Minimum time, in seconds, that the producer enforced between
+        /// consecutive boundary records.  Zero means every time step was
+        /// written.  Diagnostic only.
+        double boundaryMinSampleInterval = 0.0;
+
         bool operator==(const Header& other) const;
 
         bool hasPhase(Phase phase) const
@@ -99,6 +108,22 @@ public:
         bool operator==(const BoundaryFace& other) const;
     };
 
+    /// One record of sector boundary data.
+    ///
+    /// Records are not tied to the report step sequence: the producer writes
+    /// one per time step, subject to a minimum interval between consecutive
+    /// records, so several records may share the same \c reportStep.
+    ///
+    /// A record covers the half-open interval
+    /// <tt>[startTime, startTime + stepLength]</tt>, in seconds.  The \c rates
+    /// are the TIME-AVERAGE over that interval, so that holding them constant
+    /// across it reproduces the flow over the interval exactly.  The state
+    /// arrays -- \c pressures, \c swat, \c sgas, \c rs, \c rv and
+    /// \c temperature -- are the exterior cell values at the END of the
+    /// interval.
+    ///
+    /// Consumers should select a record by TIME rather than by report step
+    /// index, which works for either cadence.
     struct ReportStep {
         int reportStep = 0;
         int simStep = 0;
@@ -113,6 +138,20 @@ public:
         std::vector<double> rs;
         std::vector<double> rv;
         std::vector<double> temperature;
+
+        /// Component mass rates across each boundary face, in the same
+        /// face-major layout as \c rates, positive into the sector.
+        ///
+        /// The producing run forms these from its own flux and the UPWIND
+        /// phase density. A consumer can impose them directly, which matters
+        /// because for flow entering the sector the upstream cell lies outside
+        /// it, so the consumer would otherwise have to substitute its own
+        /// density. That substitution is also what makes a volumetric rate
+        /// sensitive to how the flow is distributed over time.
+        ///
+        /// Declared last so that existing aggregate initialisation of the
+        /// preceding members keeps working. Empty when unavailable.
+        std::vector<double> massRates;
 
         bool operator==(const ReportStep& other) const;
     };
