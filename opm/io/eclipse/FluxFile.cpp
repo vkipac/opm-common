@@ -295,6 +295,10 @@ void FluxFile::write(const std::string& filename, bool formatted, const Data& da
 
     output.write("FLXMINT", std::vector<double>{data.header.boundaryMinSampleInterval});
 
+    if (hasAnyValues(data.reportSteps, &ReportStep::externalRegionSums)) {
+        output.write("FLXRCON", flattenVectors(data.reportSteps, &ReportStep::externalRegionSums));
+    }
+
     if (!data.summaryKeys.empty()) {
         output.write("SMRYMINT", std::vector<double>{data.header.summaryMinSampleInterval});
         output.write("SMRYTIME", flattenSummaryTimes(data.summarySamples));
@@ -403,6 +407,7 @@ FluxFile::Data FluxFile::read(const std::string& filename, bool preload)
     const auto& temperature = optionalArray<double>(file, "FLXTEMP");
     const auto& relPerm = optionalArray<double>(file, "FLXKR");
     const auto& capPressure = optionalArray<double>(file, "FLXPC");
+    const auto& externalRegionSums = optionalArray<double>(file, "FLXRCON");
     const auto& summaryTimes = optionalArray<double>(file, "SMRYTIME");
     const auto& summaryValues = optionalArray<double>(file, "SMRYVALS");
     const auto& summaryMinInterval = optionalArray<double>(file, "SMRYMINT");
@@ -440,6 +445,7 @@ FluxFile::Data FluxFile::read(const std::string& filename, bool preload)
     const auto perFacePhaseValues = static_cast<std::size_t>(data.header.numBoundaryFaces * data.header.numPhases);
     const auto perFaceValues = static_cast<std::size_t>(data.header.numBoundaryFaces);
     const auto perSummaryValues = data.summaryKeys.size();
+    const auto externalRegionSumCount = std::size_t{16};
 
     splitPerStep(rates, perFacePhaseValues,
                  [](ReportStep& step, std::vector<double> values) { step.rates = std::move(values); },
@@ -453,6 +459,9 @@ FluxFile::Data FluxFile::read(const std::string& filename, bool preload)
     splitPerStep(capPressure, perFacePhaseValues,
                  [](ReportStep& step, std::vector<double> values) { step.capPressure = std::move(values); },
                  "FLXPC");
+    splitPerStep(externalRegionSums, externalRegionSumCount,
+                 [](ReportStep& step, std::vector<double> values) { step.externalRegionSums = std::move(values); },
+                 "FLXRCON");
     splitPerStep(pressures, perFaceValues,
                  [](ReportStep& step, std::vector<double> values) { step.pressures = std::move(values); },
                  "FLXPRES");

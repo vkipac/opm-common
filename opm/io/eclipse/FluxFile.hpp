@@ -184,6 +184,22 @@ public:
         /// phase, same layout as \c relPerm, and written alongside it.
         std::vector<double> capPressure;
 
+        /// Pore-volume weighted sums over the cells OUTSIDE the sector, used to
+        /// rebuild the producing run's field averages.
+        ///
+        /// Sixteen values: eight weighted by hydrocarbon pore volume followed
+        /// by eight weighted by total pore volume, each being pressure,
+        /// temperature, rs, rv, rsw, rvw, pore volume and salt concentration,
+        /// already multiplied by the weight and not yet divided by it.
+        ///
+        /// A reduced run adds these to its own sums before forming the
+        /// averages that convert a reservoir volume target to surface rates.
+        /// Without them it would average over its own cells only, and a well
+        /// on RESV control would be given a different target than in the full
+        /// model. Keeping sums rather than averages means the reduced run still
+        /// reflects its own changes, such as a well it has added.
+        std::vector<double> externalRegionSums;
+
         bool operator==(const ReportStep& other) const;
     };
 
@@ -224,10 +240,11 @@ public:
 
     static constexpr int formatVersion()
     {
+        // 4: FLXRCON added, the pore-volume weighted sums outside the sector.
         // 3: FLXMASS holds component masses. Version 2 wrote phase masses
         //    there, which a consumer cannot split by Rs/Rv, so those files
         //    are rejected rather than silently misread.
-        return 3;
+        return 4;
     }
 
     static void write(const std::string& filename, bool formatted, const Data& data);
