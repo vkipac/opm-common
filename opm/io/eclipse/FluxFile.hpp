@@ -19,6 +19,7 @@
 #ifndef OPM_IO_FLUXFILE_HPP
 #define OPM_IO_FLUXFILE_HPP
 
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -57,9 +58,17 @@ public:
         int boxNz = 0;
         int numCells = 0;
         int numBoundaryFaces = 0;
+        /// Number of boundary records in the file.
+        ///
+        /// Written as zero and derived from the blocks on read: the header
+        /// goes down before the first record arrives and is never revisited.
         int numReportSteps = 0;
         int numPhases = 0;
         int phaseMask = 0;
+
+        /// Whether any record carries exterior temperature.
+        ///
+        /// Derived on read, like numReportSteps.
         bool hasTemperature = false;
         Mode mode = Mode::Flux;
         Sampling sampling = Sampling::Averaged;
@@ -70,11 +79,15 @@ public:
 
         /// Number of embedded parent summary samples.  Matches
         /// Data::summarySamples.size().
+        ///
+        /// Derived on read, like numReportSteps.
         int numSummarySamples = 0;
 
         /// Whether the summary samples were taken at sub-report-step
         /// resolution.  False means summary data, if any, is only available
         /// at report-step boundaries.
+        ///
+        /// Derived on read, like numReportSteps.
         bool summaryPerTimestep = false;
 
         /// Minimum time, in seconds, that the producer enforced between
@@ -84,6 +97,8 @@ public:
 
         /// Whether the boundary records were written at sub-report-step
         /// resolution.  False means one record per report step.
+        ///
+        /// Derived on read, like numReportSteps.
         bool boundaryPerTimestep = false;
 
         /// Minimum time, in seconds, that the producer enforced between
@@ -240,18 +255,87 @@ public:
 
     static constexpr int formatVersion()
     {
+        // 5: Record data is written as repeated self-contained blocks rather
+        //    than one flat array per quantity spanning the whole run, so that
+        //    records can be appended instead of the file being rewritten.
         // 4: FLXRCON added, the pore-volume weighted sums outside the sector.
         // 3: FLXMASS holds component masses. Version 2 wrote phase masses
         //    there, which a consumer cannot split by Rs/Rv, so those files
         //    are rejected rather than silently misread.
-        return 4;
+        return 5;
     }
 
-    static void write(const std::string& filename, bool formatted, const Data& data);
-    static Data read(const std::string& filename, bool preload = true);
+    /// Incremental writer for a FLUX file.
+    ///
+    /// The static section -- header, names and boundary geometry -- goes down
+    /// once, when the first data arrives. Everything after it is a
+    /// self-contained block, so a record is added by appending to the end of
+    /// the file rather than rewriting it. A run that writes N times therefore
+    /// moves bytes proportional to N rather than to N squared, and the
+    /// producer need not keep the whole history in memory.
+    ///
+    /// There is deliberately no whole-file write. Appending is the only way to
+    /// produce a FLUX file, so no call can truncate the file of a run that is
+    /// still going.
+    class Writer
+    {
+    public:
+        /// \param[in] filename Path to write.
+        ///
+        /// \param[in] formatted Whether to write text rather than binary.
+        ///
+        /// \param[in] staticData Header, names, cell map, boundary faces and
+        ///    summary keys. Its \c reportSteps and \c summarySamples are
+        ///    ignored; pass those to appendRecords() and
+        ///    appendSummarySamples(). Nothing reaches the file until the first
+        ///    of those calls, so the caller may still adjust the minimum
+        ///    sample intervals and the summary keys until then.
+        Writer(std::string filename, bool formatted, Data staticData);
+
+        /// Append one block holding every record given.
+        ///
+        /// A quantity must be present on every record of a block or on none;
+        /// records that lack one which others in the same block carry are
+        /// padded with zeros.
+        void appendRecords(const std::vector<ReportStep>& records);
+
+        /// Append one block holding every summary sample given.
+        void appendSummarySamples(const std::vector<SummarySample>& samples);
+
+        /// Write the static section if nothing has been appended, so that a
+        /// run which produced no records still leaves a readable file.
+        void close();
+
+        int numRecords() const { return this->numRecords_; }
+
+    private:
+        void writeStaticSection();
+
+        std::string filename_;
+        bool formatted_;
+        Data static_;
+        bool staticWritten_{false};
+        int boundaryBlocks_{0};
+        int summaryBlocks_{0};
+        int numRecords_{0};
+        int numSamples_{0};
+        double lastSummaryTime_{-std::numeric_limits<double>::max()};
+    };
+
+    /// Read a FLUX file in full.
+    ///
+    /// A file whose last block was truncated, because the producing run was
+    /// killed part way through a write, is read up to the last complete block
+    /// rather than rejected.
+    static Data read(const std::string& filename, bool preload = false);
 
 private:
-    static void validateForWrite(const Data& data);
+    static void validateStaticForWrite(const Data& data);
+    static void validateRecordsForWrite(const Data& data,
+                                        const std::vector<ReportStep>& records);
+    static void validateSamplesForWrite(const Data& data,
+                                        const std::vector<SummarySample>& samples,
+                                        double previousTime);
     static void validateAfterRead(const Data& data);
 };
 

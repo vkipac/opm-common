@@ -23,6 +23,8 @@
 #include <opm/io/eclipse/EclFile.hpp>
 #include <opm/io/eclipse/EclOutput.hpp>
 
+#include <opm/common/OpmLog/OpmLog.hpp>
+
 #include <fmt/format.h>
 
 #include <array>
@@ -170,6 +172,28 @@ std::vector<double> flattenVectors(const std::vector<Opm::EclIO::FluxFile::Repor
     return values;
 }
 
+// A block stores one array per quantity covering all of its records, so a
+// quantity has to be present on every record of the block or on none. Records
+// that lack one the others carry are padded, rather than the whole series being
+// dropped: the first record is emitted before anything has been sampled.
+std::vector<double> flattenVectorsPadded(const std::vector<Opm::EclIO::FluxFile::ReportStep>& steps,
+                                         const std::vector<double> Opm::EclIO::FluxFile::ReportStep::* member,
+                                         const std::size_t width)
+{
+    std::vector<double> values;
+    values.reserve(steps.size() * width);
+    for (const auto& step : steps) {
+        const auto& field = step.*member;
+        if (field.empty()) {
+            values.insert(values.end(), width, 0.0);
+        }
+        else {
+            values.insert(values.end(), field.begin(), field.end());
+        }
+    }
+    return values;
+}
+
 std::vector<std::string> makeNames(const Opm::EclIO::FluxFile::Data& data)
 {
     auto names = data.names;
@@ -212,12 +236,23 @@ bool hasAnyValues(const std::vector<Opm::EclIO::FluxFile::ReportStep>& steps,
 
 Opm::EclIO::EclFile openFluxFile(const std::string& filename, bool preload)
 {
-    try {
-        return {filename, Opm::EclIO::EclFile::Formatted{false}, preload};
-    }
-    catch (const std::exception&) {
-        return {filename, Opm::EclIO::EclFile::Formatted{true}, preload};
-    }
+    // Tolerant: a FLUX file grows by appending as the producing run proceeds,
+    // so one that was killed part way through a write ends inside an array.
+    // Read up to the last complete one rather than refusing the file.
+    using Formatted = Opm::EclIO::EclFile::Formatted;
+    using Tolerant = Opm::EclIO::EclFile::Tolerant;
+
+    // Tolerant mode stops rather than throwing on something it cannot parse,
+    // so whether the file is binary is settled by looking for the array every
+    // FLUX file opens with, not by catching an exception.
+    const auto isBinary = [&filename]
+    {
+        const Opm::EclIO::EclFile probe{filename, Formatted{false}, Tolerant{true}, false};
+        const auto& names = probe.arrayNames();
+        return !names.empty() && (names.front() == "FLUXHEAD");
+    }();
+
+    return {filename, Formatted{!isBinary}, Tolerant{true}, preload};
 }
 
 } // namespace
@@ -234,78 +269,159 @@ bool FluxFile::SummarySample::operator==(const SummarySample& other) const = def
 
 bool FluxFile::Data::operator==(const Data& other) const = default;
 
-void FluxFile::write(const std::string& filename, bool formatted, const Data& data)
+FluxFile::Writer::Writer(std::string filename, bool formatted, Data staticData)
+    : filename_(std::move(filename))
+    , formatted_(formatted)
+    , static_(std::move(staticData))
 {
-    validateForWrite(data);
+    // The records the caller happened to leave in there are not ours to write.
+    this->static_.reportSteps.clear();
+    this->static_.summarySamples.clear();
+}
 
-    EclOutput output(filename, formatted);
-    output.write("FLUXHEAD", makeHeader(data.header));
+void FluxFile::Writer::writeStaticSection()
+{
+    validateStaticForWrite(this->static_);
+
+    const auto& data = this->static_;
+
+    // Counts and cadence flags describe data that has not been written yet, so
+    // they go down as zero and the reader derives them from the blocks it
+    // finds. Patching them afterwards would mean seeking back into a file the
+    // producer is still appending to.
+    auto header = data.header;
+    header.numReportSteps = 0;
+    header.numSummarySamples = 0;
+    header.hasTemperature = false;
+    header.boundaryPerTimestep = false;
+    header.summaryPerTimestep = false;
+
+    EclOutput output(this->filename_, this->formatted_);
+    output.write("FLUXHEAD", makeHeader(header));
     output.write("FLUXNAMS", makeNames(data), 32);
-    output.write("FLUXNCNT", std::vector<int>{static_cast<int>(data.names.size()), static_cast<int>(data.summaryKeys.size())});
+    output.write("FLUXNCNT", std::vector<int>{static_cast<int>(data.names.size()),
+                                              static_cast<int>(data.summaryKeys.size())});
     output.write("LOCGLOB", data.localToGlobal);
     output.write("FLUXCELL", flattenBoundary(data.boundaryFaces, &BoundaryFace::interiorLocalCell));
     output.write("FLUXDIR", flattenBoundary(data.boundaryFaces, &BoundaryFace::direction));
     output.write("FLUXNNC", flattenBoundary(data.boundaryFaces, &BoundaryFace::exteriorGlobalCell));
     output.write("FLUXTRAN", flattenBoundary(data.boundaryFaces, &BoundaryFace::transmissibility));
     output.write("FLXPVTN", flattenBoundary(data.boundaryFaces, &BoundaryFace::exteriorPvtRegion));
-    output.write("FLXSTEP", flattenStepMeta(data.reportSteps, &ReportStep::reportStep));
-    output.write("FLXSIM", flattenStepMeta(data.reportSteps, &ReportStep::simStep));
-    output.write("FLXTIME", flattenStepMeta(data.reportSteps, &ReportStep::startTime));
-    output.write("FLXDT", flattenStepMeta(data.reportSteps, &ReportStep::stepLength));
-
-    if ((static_cast<int>(data.header.mode) & static_cast<int>(Mode::Flux)) != 0) {
-        output.write("FLXRATE", flattenVectors(data.reportSteps, &ReportStep::rates));
-
-        if (hasAnyValues(data.reportSteps, &ReportStep::massRates)) {
-            output.write("FLXMASS", flattenVectors(data.reportSteps, &ReportStep::massRates));
-        }
-    }
-
-    if ((static_cast<int>(data.header.mode) & static_cast<int>(Mode::Pressure)) != 0) {
-        output.write("FLXPRES", flattenVectors(data.reportSteps, &ReportStep::pressures));
-
-        if (data.header.hasPhase(Phase::Water)) {
-            output.write("FLXSATW", flattenVectors(data.reportSteps, &ReportStep::swat));
-        }
-
-        if (data.header.hasPhase(Phase::Gas)) {
-            output.write("FLXSATG", flattenVectors(data.reportSteps, &ReportStep::sgas));
-        }
-
-        if (hasAnyValues(data.reportSteps, &ReportStep::rs)) {
-            output.write("FLXRS", flattenVectors(data.reportSteps, &ReportStep::rs));
-        }
-
-        if (hasAnyValues(data.reportSteps, &ReportStep::rv)) {
-            output.write("FLXRV", flattenVectors(data.reportSteps, &ReportStep::rv));
-        }
-
-        if (data.header.hasTemperature) {
-            output.write("FLXTEMP", flattenVectors(data.reportSteps, &ReportStep::temperature));
-        }
-
-        if (hasAnyValues(data.reportSteps, &ReportStep::relPerm)) {
-            output.write("FLXKR", flattenVectors(data.reportSteps, &ReportStep::relPerm));
-        }
-
-        if (hasAnyValues(data.reportSteps, &ReportStep::capPressure)) {
-            output.write("FLXPC", flattenVectors(data.reportSteps, &ReportStep::capPressure));
-        }
-    }
-
     output.write("FLXMINT", std::vector<double>{data.header.boundaryMinSampleInterval});
-
-    if (hasAnyValues(data.reportSteps, &ReportStep::externalRegionSums)) {
-        output.write("FLXRCON", flattenVectors(data.reportSteps, &ReportStep::externalRegionSums));
-    }
 
     if (!data.summaryKeys.empty()) {
         output.write("SMRYMINT", std::vector<double>{data.header.summaryMinSampleInterval});
-        output.write("SMRYTIME", flattenSummaryTimes(data.summarySamples));
-        output.write("SMRYVALS", flattenSummaryValues(data.summarySamples));
     }
 
     output.flushStream();
+
+    this->staticWritten_ = true;
+}
+
+void FluxFile::Writer::appendRecords(const std::vector<ReportStep>& records)
+{
+    if (records.empty()) {
+        return;
+    }
+
+    validateRecordsForWrite(this->static_, records);
+
+    if (!this->staticWritten_) {
+        this->writeStaticSection();
+    }
+
+    const auto& header = this->static_.header;
+    const auto perFaceValues = static_cast<std::size_t>(header.numBoundaryFaces);
+    const auto perFacePhaseValues = perFaceValues * static_cast<std::size_t>(header.numPhases);
+    constexpr auto externalRegionSumCount = std::size_t{16};
+
+    EclOutput output(this->filename_, this->formatted_, std::ios::app);
+
+    // FLXSEQ opens the block and says how many records it holds, the way SEQNUM
+    // opens a restart step.
+    output.write("FLXSEQ", std::vector<int>{this->boundaryBlocks_,
+                                            static_cast<int>(records.size())});
+    output.write("FLXSTEP", flattenStepMeta(records, &ReportStep::reportStep));
+    output.write("FLXSIM", flattenStepMeta(records, &ReportStep::simStep));
+    output.write("FLXTIME", flattenStepMeta(records, &ReportStep::startTime));
+    output.write("FLXDT", flattenStepMeta(records, &ReportStep::stepLength));
+
+    const auto emit = [&output, &records]
+        (const char* name,
+         const std::vector<double> ReportStep::* member,
+         const std::size_t width)
+    {
+        if (hasAnyValues(records, member)) {
+            output.write(name, flattenVectorsPadded(records, member, width));
+        }
+    };
+
+    if ((static_cast<int>(header.mode) & static_cast<int>(Mode::Flux)) != 0) {
+        output.write("FLXRATE", flattenVectorsPadded(records, &ReportStep::rates,
+                                                     perFacePhaseValues));
+        emit("FLXMASS", &ReportStep::massRates, perFacePhaseValues);
+    }
+
+    if ((static_cast<int>(header.mode) & static_cast<int>(Mode::Pressure)) != 0) {
+        output.write("FLXPRES", flattenVectorsPadded(records, &ReportStep::pressures,
+                                                     perFaceValues));
+
+        if (header.hasPhase(Phase::Water)) {
+            output.write("FLXSATW", flattenVectorsPadded(records, &ReportStep::swat,
+                                                         perFaceValues));
+        }
+
+        if (header.hasPhase(Phase::Gas)) {
+            output.write("FLXSATG", flattenVectorsPadded(records, &ReportStep::sgas,
+                                                         perFaceValues));
+        }
+
+        emit("FLXRS", &ReportStep::rs, perFaceValues);
+        emit("FLXRV", &ReportStep::rv, perFaceValues);
+        emit("FLXTEMP", &ReportStep::temperature, perFaceValues);
+        emit("FLXKR", &ReportStep::relPerm, perFacePhaseValues);
+        emit("FLXPC", &ReportStep::capPressure, perFacePhaseValues);
+    }
+
+    emit("FLXRCON", &ReportStep::externalRegionSums, externalRegionSumCount);
+
+    output.flushStream();
+
+    ++this->boundaryBlocks_;
+    this->numRecords_ += static_cast<int>(records.size());
+}
+
+void FluxFile::Writer::appendSummarySamples(const std::vector<SummarySample>& samples)
+{
+    if (samples.empty()) {
+        return;
+    }
+
+    validateSamplesForWrite(this->static_, samples, this->lastSummaryTime_);
+
+    if (!this->staticWritten_) {
+        this->writeStaticSection();
+    }
+
+    EclOutput output(this->filename_, this->formatted_, std::ios::app);
+
+    output.write("SMRYSEQ", std::vector<int>{this->summaryBlocks_,
+                                             static_cast<int>(samples.size())});
+    output.write("SMRYTIME", flattenSummaryTimes(samples));
+    output.write("SMRYVALS", flattenSummaryValues(samples));
+
+    output.flushStream();
+
+    ++this->summaryBlocks_;
+    this->numSamples_ += static_cast<int>(samples.size());
+    this->lastSummaryTime_ = samples.back().time;
+}
+
+void FluxFile::Writer::close()
+{
+    if (!this->staticWritten_) {
+        this->writeStaticSection();
+    }
 }
 
 FluxFile::Data FluxFile::read(const std::string& filename, bool preload)
@@ -320,10 +436,6 @@ FluxFile::Data FluxFile::read(const std::string& filename, bool preload)
     requireArray<int>(file, "FLUXDIR");
     requireArray<int>(file, "FLUXNNC");
     requireArray<double>(file, "FLUXTRAN");
-    requireArray<int>(file, "FLXSTEP");
-    requireArray<int>(file, "FLXSIM");
-    requireArray<double>(file, "FLXTIME");
-    requireArray<double>(file, "FLXDT");
 
     Data data;
     data.header = parseHeader(file.get<int>("FLUXHEAD"));
@@ -332,26 +444,6 @@ FluxFile::Data FluxFile::read(const std::string& filename, bool preload)
         OPM_THROW(std::runtime_error,
                   fmt::format("Unsupported FLUXHEAD version {} in '{}'; expected {}",
                               data.header.version, filename, formatVersion()));
-    }
-
-    const auto fluxEnabled = (static_cast<int>(data.header.mode) & static_cast<int>(Mode::Flux)) != 0;
-    const auto pressureEnabled = (static_cast<int>(data.header.mode) & static_cast<int>(Mode::Pressure)) != 0;
-
-    if (fluxEnabled) {
-        requireArray<double>(file, "FLXRATE");
-    }
-
-    if (pressureEnabled) {
-        requireArray<double>(file, "FLXPRES");
-        if (data.header.hasPhase(Phase::Water)) {
-            requireArray<double>(file, "FLXSATW");
-        }
-        if (data.header.hasPhase(Phase::Gas)) {
-            requireArray<double>(file, "FLXSATG");
-        }
-        if (data.header.hasTemperature) {
-            requireArray<double>(file, "FLXTEMP");
-        }
     }
 
     const auto& fluxnams = file.get<std::string>("FLUXNAMS");
@@ -389,27 +481,6 @@ FluxFile::Data FluxFile::read(const std::string& filename, bool preload)
                                                   (index < fluxPvtn.size()) ? fluxPvtn[index] : 0});
     }
 
-    const auto& reportSteps = file.get<int>("FLXSTEP");
-    const auto& simSteps = file.get<int>("FLXSIM");
-    const auto& startTimes = file.get<double>("FLXTIME");
-    const auto& stepLengths = file.get<double>("FLXDT");
-    if (!(reportSteps.size() == simSteps.size() && simSteps.size() == startTimes.size() && startTimes.size() == stepLengths.size())) {
-        OPM_THROW(std::runtime_error, "Report-step metadata arrays in FLUX file have inconsistent sizes");
-    }
-
-    const auto& rates = optionalArray<double>(file, "FLXRATE");
-    const auto& massRates = optionalArray<double>(file, "FLXMASS");
-    const auto& pressures = optionalArray<double>(file, "FLXPRES");
-    const auto& swat = optionalArray<double>(file, "FLXSATW");
-    const auto& sgas = optionalArray<double>(file, "FLXSATG");
-    const auto& rs = optionalArray<double>(file, "FLXRS");
-    const auto& rv = optionalArray<double>(file, "FLXRV");
-    const auto& temperature = optionalArray<double>(file, "FLXTEMP");
-    const auto& relPerm = optionalArray<double>(file, "FLXKR");
-    const auto& capPressure = optionalArray<double>(file, "FLXPC");
-    const auto& externalRegionSums = optionalArray<double>(file, "FLXRCON");
-    const auto& summaryTimes = optionalArray<double>(file, "SMRYTIME");
-    const auto& summaryValues = optionalArray<double>(file, "SMRYVALS");
     const auto& summaryMinInterval = optionalArray<double>(file, "SMRYMINT");
     const auto& boundaryMinInterval = optionalArray<double>(file, "FLXMINT");
 
@@ -419,88 +490,239 @@ FluxFile::Data FluxFile::read(const std::string& filename, bool preload)
     data.header.boundaryMinSampleInterval =
         boundaryMinInterval.empty() ? 0.0 : boundaryMinInterval.front();
 
-    data.reportSteps.resize(reportSteps.size());
-    auto splitPerStep = [&](const std::vector<double>& flat, std::size_t perStep, auto setter, const std::string& name) {
-        if (flat.empty()) {
-            return;
-        }
-        if (flat.size() != perStep * data.reportSteps.size()) {
-            OPM_THROW(std::runtime_error,
-                      fmt::format("{} size {} does not match {} values per step x {} steps",
-                                  name, flat.size(), perStep, data.reportSteps.size()));
-        }
-        for (std::size_t step = 0; step < data.reportSteps.size(); ++step) {
-            auto begin = flat.begin() + static_cast<std::ptrdiff_t>(step * perStep);
-            setter(data.reportSteps[step], std::vector<double>(begin, begin + static_cast<std::ptrdiff_t>(perStep)));
-        }
+    // Everything from here on lives in self-contained blocks appended after the
+    // static section: FLXSEQ opens a block of boundary records and SMRYSEQ one
+    // of summary samples, each running to the next marker or to the end.
+    const auto& arrayNames = file.arrayNames();
+
+    const auto isMarker = [](const std::string& name)
+    {
+        return (name == "FLXSEQ") || (name == "SMRYSEQ");
     };
 
-    for (std::size_t step = 0; step < data.reportSteps.size(); ++step) {
-        data.reportSteps[step].reportStep = reportSteps[step];
-        data.reportSteps[step].simStep = simSteps[step];
-        data.reportSteps[step].startTime = startTimes[step];
-        data.reportSteps[step].stepLength = stepLengths[step];
+    const auto perFaceValues = static_cast<std::size_t>(data.header.numBoundaryFaces);
+    const auto perFacePhaseValues = perFaceValues * static_cast<std::size_t>(data.header.numPhases);
+    const auto perSummaryValues = data.summaryKeys.size();
+    constexpr auto externalRegionSumCount = std::size_t{16};
+
+    // A file the producer was killed part way through ends inside an array, and
+    // the reader above stopped at the last complete one. The block that array
+    // belonged to is then only partly there, so it is dropped whole: a torn
+    // file loses its last block and nothing else.
+    std::size_t recordsBeforeLastBlock = 0;
+    std::size_t samplesBeforeLastBlock = 0;
+    bool sawBlock = false;
+
+    for (std::size_t first = 0; first < arrayNames.size(); ) {
+        if (!isMarker(arrayNames[first])) {
+            ++first;
+            continue;
+        }
+
+        auto last = first + 1;
+        while ((last < arrayNames.size()) && !isMarker(arrayNames[last])) {
+            ++last;
+        }
+
+        const auto isFinalBlock = (last == arrayNames.size());
+
+        recordsBeforeLastBlock = data.reportSteps.size();
+        samplesBeforeLastBlock = data.summarySamples.size();
+        sawBlock = true;
+
+        // Index of a named array within this block, or -1.
+        const auto indexOf = [&arrayNames, first, last](const std::string& name) -> int
+        {
+            for (auto k = first; k < last; ++k) {
+                if (arrayNames[k] == name) {
+                    return static_cast<int>(k);
+                }
+            }
+
+            return -1;
+        };
+
+        try {
+            const auto& marker = file.get<int>(static_cast<int>(first));
+            if (marker.size() < 2) {
+                OPM_THROW(std::runtime_error,
+                          fmt::format("{} must contain 2 integers, got {}",
+                                      arrayNames[first], marker.size()));
+            }
+
+            const auto count = static_cast<std::size_t>(marker[1]);
+
+            if (arrayNames[first] == "FLXSEQ") {
+                const auto base = data.reportSteps.size();
+                data.reportSteps.resize(base + count);
+
+                const auto metaIndex = [&](const std::string& name)
+                {
+                    const auto idx = indexOf(name);
+                    if (idx < 0) {
+                        OPM_THROW(std::runtime_error,
+                                  fmt::format("Missing required FLUX array '{}'", name));
+                    }
+
+                    return idx;
+                };
+
+                const auto requireCount = [count](const std::string& name, std::size_t got)
+                {
+                    if (got != count) {
+                        OPM_THROW(std::runtime_error,
+                                  fmt::format("{} holds {} values but the block declares {} "
+                                              "records", name, got, count));
+                    }
+                };
+
+                const auto& stepNumbers = file.get<int>(metaIndex("FLXSTEP"));
+                const auto& simNumbers = file.get<int>(metaIndex("FLXSIM"));
+                const auto& startTimes = file.get<double>(metaIndex("FLXTIME"));
+                const auto& stepLengths = file.get<double>(metaIndex("FLXDT"));
+
+                requireCount("FLXSTEP", stepNumbers.size());
+                requireCount("FLXSIM", simNumbers.size());
+                requireCount("FLXTIME", startTimes.size());
+                requireCount("FLXDT", stepLengths.size());
+
+                for (std::size_t r = 0; r < count; ++r) {
+                    auto& step = data.reportSteps[base + r];
+                    step.reportStep = stepNumbers[r];
+                    step.simStep = simNumbers[r];
+                    step.startTime = startTimes[r];
+                    step.stepLength = stepLengths[r];
+                }
+
+                const auto split = [&](const std::string& name,
+                                       std::vector<double> ReportStep::* member,
+                                       const std::size_t width)
+                {
+                    const auto idx = indexOf(name);
+                    if (idx < 0) {
+                        return;
+                    }
+
+                    const auto& flat = file.get<double>(idx);
+                    if (flat.size() != width * count) {
+                        OPM_THROW(std::runtime_error,
+                                  fmt::format("{} size {} does not match {} values per record "
+                                              "x {} records", name, flat.size(), width, count));
+                    }
+
+                    for (std::size_t r = 0; r < count; ++r) {
+                        const auto begin = flat.begin() + static_cast<std::ptrdiff_t>(r * width);
+                        (data.reportSteps[base + r].*member)
+                            .assign(begin, begin + static_cast<std::ptrdiff_t>(width));
+                    }
+                };
+
+                split("FLXRATE", &ReportStep::rates, perFacePhaseValues);
+                split("FLXMASS", &ReportStep::massRates, perFacePhaseValues);
+                split("FLXKR", &ReportStep::relPerm, perFacePhaseValues);
+                split("FLXPC", &ReportStep::capPressure, perFacePhaseValues);
+                split("FLXRCON", &ReportStep::externalRegionSums, externalRegionSumCount);
+                split("FLXPRES", &ReportStep::pressures, perFaceValues);
+                split("FLXSATW", &ReportStep::swat, perFaceValues);
+                split("FLXSATG", &ReportStep::sgas, perFaceValues);
+                split("FLXRS", &ReportStep::rs, perFaceValues);
+                split("FLXRV", &ReportStep::rv, perFaceValues);
+                split("FLXTEMP", &ReportStep::temperature, perFaceValues);
+            }
+            else {
+                if (perSummaryValues == 0) {
+                    OPM_THROW(std::runtime_error,
+                              "FLUX file contains summary samples but no summary keys");
+                }
+
+                const auto timeIdx = indexOf("SMRYTIME");
+                const auto valueIdx = indexOf("SMRYVALS");
+                if ((timeIdx < 0) || (valueIdx < 0)) {
+                    OPM_THROW(std::runtime_error,
+                              "Summary block is missing SMRYTIME or SMRYVALS");
+                }
+
+                const auto& times = file.get<double>(timeIdx);
+                const auto& values = file.get<double>(valueIdx);
+
+                if (times.size() != count) {
+                    OPM_THROW(std::runtime_error,
+                              fmt::format("SMRYTIME holds {} values but the block declares {} "
+                                          "samples", times.size(), count));
+                }
+
+                if (values.size() != perSummaryValues * count) {
+                    OPM_THROW(std::runtime_error,
+                              fmt::format("SMRYVALS size {} does not match {} keys x {} samples",
+                                          values.size(), perSummaryValues, count));
+                }
+
+                const auto base = data.summarySamples.size();
+                data.summarySamples.resize(base + count);
+                for (std::size_t s = 0; s < count; ++s) {
+                    const auto begin = values.begin()
+                        + static_cast<std::ptrdiff_t>(s * perSummaryValues);
+
+                    data.summarySamples[base + s].time = times[s];
+                    data.summarySamples[base + s].values
+                        .assign(begin, begin + static_cast<std::ptrdiff_t>(perSummaryValues));
+                }
+            }
+        }
+        catch (const std::exception& e) {
+            // A block that is short or unreadable at the very end of the file is
+            // what a producer killed part way through a write leaves behind.
+            // Keep everything before it. Anywhere else it means real damage.
+            if (!isFinalBlock) {
+                throw;
+            }
+
+            OpmLog::warning(
+                fmt::format("The last block of '{}' is incomplete and has been discarded: {}. "
+                            "This is what a run killed during a write leaves behind; the "
+                            "records before it are intact.", filename, e.what()));
+
+            data.reportSteps.resize(recordsBeforeLastBlock);
+            data.summarySamples.resize(samplesBeforeLastBlock);
+            break;
+        }
+
+        first = last;
     }
 
-    const auto perFacePhaseValues = static_cast<std::size_t>(data.header.numBoundaryFaces * data.header.numPhases);
-    const auto perFaceValues = static_cast<std::size_t>(data.header.numBoundaryFaces);
-    const auto perSummaryValues = data.summaryKeys.size();
-    const auto externalRegionSumCount = std::size_t{16};
-
-    splitPerStep(rates, perFacePhaseValues,
-                 [](ReportStep& step, std::vector<double> values) { step.rates = std::move(values); },
-                 "FLXRATE");
-    splitPerStep(massRates, perFacePhaseValues,
-                 [](ReportStep& step, std::vector<double> values) { step.massRates = std::move(values); },
-                 "FLXMASS");
-    splitPerStep(relPerm, perFacePhaseValues,
-                 [](ReportStep& step, std::vector<double> values) { step.relPerm = std::move(values); },
-                 "FLXKR");
-    splitPerStep(capPressure, perFacePhaseValues,
-                 [](ReportStep& step, std::vector<double> values) { step.capPressure = std::move(values); },
-                 "FLXPC");
-    splitPerStep(externalRegionSums, externalRegionSumCount,
-                 [](ReportStep& step, std::vector<double> values) { step.externalRegionSums = std::move(values); },
-                 "FLXRCON");
-    splitPerStep(pressures, perFaceValues,
-                 [](ReportStep& step, std::vector<double> values) { step.pressures = std::move(values); },
-                 "FLXPRES");
-    splitPerStep(swat, perFaceValues,
-                 [](ReportStep& step, std::vector<double> values) { step.swat = std::move(values); },
-                 "FLXSATW");
-    splitPerStep(sgas, perFaceValues,
-                 [](ReportStep& step, std::vector<double> values) { step.sgas = std::move(values); },
-                 "FLXSATG");
-    splitPerStep(rs, perFaceValues,
-                 [](ReportStep& step, std::vector<double> values) { step.rs = std::move(values); },
-                 "FLXRS");
-    splitPerStep(rv, perFaceValues,
-                 [](ReportStep& step, std::vector<double> values) { step.rv = std::move(values); },
-                 "FLXRV");
-    splitPerStep(temperature, perFaceValues,
-                 [](ReportStep& step, std::vector<double> values) { step.temperature = std::move(values); },
-                 "FLXTEMP");
-
-    if (!summaryTimes.empty() || !summaryValues.empty()) {
-        if (perSummaryValues == 0) {
-            OPM_THROW(std::runtime_error,
-                      "FLUX file contains summary samples but no summary keys");
+    if (file.isTruncated() && sawBlock) {
+        // The array chain itself ran out, so the block the reader just finished
+        // was missing whatever came after the tear even if it assembled without
+        // complaint. Drop it rather than hand back a record with holes in it.
+        if ((data.reportSteps.size() > recordsBeforeLastBlock)
+            || (data.summarySamples.size() > samplesBeforeLastBlock))
+        {
+            OpmLog::warning(
+                fmt::format("'{}' ends part way through a block, which is what a run killed "
+                            "during a write leaves behind. That block has been discarded; "
+                            "the {} record(s) before it are intact.",
+                            filename, recordsBeforeLastBlock));
         }
 
-        if (summaryValues.size() != perSummaryValues * summaryTimes.size()) {
-            OPM_THROW(std::runtime_error,
-                      fmt::format("SMRYVALS size {} does not match {} keys x {} samples",
-                                  summaryValues.size(), perSummaryValues, summaryTimes.size()));
-        }
+        data.reportSteps.resize(recordsBeforeLastBlock);
+        data.summarySamples.resize(samplesBeforeLastBlock);
+    }
 
-        data.summarySamples.resize(summaryTimes.size());
-        for (std::size_t sample = 0; sample < summaryTimes.size(); ++sample) {
-            const auto begin = summaryValues.begin()
-                + static_cast<std::ptrdiff_t>(sample * perSummaryValues);
+    // The header goes down before any of this exists, so its counts and cadence
+    // flags are recovered from the blocks rather than read from the file.
+    data.header.numReportSteps = static_cast<int>(data.reportSteps.size());
+    data.header.numSummarySamples = static_cast<int>(data.summarySamples.size());
+    data.header.summaryPerTimestep = !data.summarySamples.empty();
 
-            data.summarySamples[sample].time = summaryTimes[sample];
-            data.summarySamples[sample].values
-                .assign(begin, begin + static_cast<std::ptrdiff_t>(perSummaryValues));
+    data.header.hasTemperature =
+        std::any_of(data.reportSteps.begin(), data.reportSteps.end(),
+                    [](const ReportStep& step) { return !step.temperature.empty(); });
+
+    data.header.boundaryPerTimestep = false;
+    for (std::size_t step = 1; step < data.reportSteps.size(); ++step) {
+        if (data.reportSteps[step].reportStep == data.reportSteps[step - 1].reportStep) {
+            data.header.boundaryPerTimestep = true;
+            break;
         }
     }
 
@@ -508,7 +730,7 @@ FluxFile::Data FluxFile::read(const std::string& filename, bool preload)
     return data;
 }
 
-void FluxFile::validateForWrite(const Data& data)
+void FluxFile::validateStaticForWrite(const Data& data)
 {
     if (data.header.version != formatVersion()) {
         OPM_THROW(std::invalid_argument,
@@ -528,24 +750,28 @@ void FluxFile::validateForWrite(const Data& data)
                               data.header.numBoundaryFaces, data.boundaryFaces.size()));
     }
 
-    if (data.header.numReportSteps != static_cast<int>(data.reportSteps.size())) {
-        OPM_THROW(std::invalid_argument,
-                  fmt::format("Header numReportSteps {} does not match report step count {}",
-                              data.header.numReportSteps, data.reportSteps.size()));
-    }
-
     if (data.header.numPhases != std::popcount(static_cast<unsigned int>(data.header.phaseMask))) {
         OPM_THROW(std::invalid_argument,
                   fmt::format("Header numPhases {} does not match phaseMask 0x{:x}",
                               data.header.numPhases, data.header.phaseMask));
     }
 
+    if (data.header.numSummaryKeys != static_cast<int>(data.summaryKeys.size())) {
+        OPM_THROW(std::invalid_argument,
+                  fmt::format("Header numSummaryKeys {} does not match summary key count {}",
+                              data.header.numSummaryKeys, data.summaryKeys.size()));
+    }
+}
+
+void FluxFile::validateRecordsForWrite(const Data& data,
+                                       const std::vector<ReportStep>& records)
+{
     const auto fluxEnabled = (static_cast<int>(data.header.mode) & static_cast<int>(Mode::Flux)) != 0;
     const auto pressureEnabled = (static_cast<int>(data.header.mode) & static_cast<int>(Mode::Pressure)) != 0;
     const auto perFaceValues = static_cast<std::size_t>(data.header.numBoundaryFaces);
-    const auto perFacePhaseValues = static_cast<std::size_t>(data.header.numBoundaryFaces * data.header.numPhases);
+    const auto perFacePhaseValues = perFaceValues * static_cast<std::size_t>(data.header.numPhases);
 
-    for (const auto& step : data.reportSteps) {
+    for (const auto& step : records) {
         if (fluxEnabled && step.rates.size() != perFacePhaseValues) {
             OPM_THROW(std::invalid_argument,
                       fmt::format("Each FLXRATE step must contain {} values, got {}",
@@ -556,6 +782,12 @@ void FluxFile::validateForWrite(const Data& data)
             OPM_THROW(std::invalid_argument,
                       fmt::format("Each FLXMASS step must contain {} values, got {}",
                                   perFacePhaseValues, step.massRates.size()));
+        }
+
+        if (!step.externalRegionSums.empty() && (step.externalRegionSums.size() != 16)) {
+            OPM_THROW(std::invalid_argument,
+                      fmt::format("Each FLXRCON step must contain 16 values, got {}",
+                                  step.externalRegionSums.size()));
         }
 
         if (pressureEnabled) {
@@ -591,11 +823,8 @@ void FluxFile::validateForWrite(const Data& data)
                 checkSize(step.rv, "FLXRV");
             }
 
-            if (data.header.hasTemperature) {
+            if (!step.temperature.empty()) {
                 checkSize(step.temperature, "FLXTEMP");
-            }
-            else if (!step.temperature.empty()) {
-                OPM_THROW(std::invalid_argument, "Temperature values provided, but header.hasTemperature is false");
             }
         }
     }
@@ -605,33 +834,32 @@ void FluxFile::validateForWrite(const Data& data)
                   fmt::format("Header numSummaryKeys {} does not match summary key count {}",
                               data.header.numSummaryKeys, data.summaryKeys.size()));
     }
+}
 
-    if (data.header.numSummarySamples != static_cast<int>(data.summarySamples.size())) {
-        OPM_THROW(std::invalid_argument,
-                  fmt::format("Header numSummarySamples {} does not match summary sample count {}",
-                              data.header.numSummarySamples, data.summarySamples.size()));
-    }
-
-    if (!data.summarySamples.empty() && data.summaryKeys.empty()) {
+void FluxFile::validateSamplesForWrite(const Data& data,
+                                       const std::vector<SummarySample>& samples,
+                                       const double previousTime)
+{
+    if (!samples.empty() && data.summaryKeys.empty()) {
         OPM_THROW(std::invalid_argument,
                   "Summary samples provided, but no summary keys are defined");
     }
 
-    auto previousTime = -std::numeric_limits<double>::max();
-    for (const auto& sample : data.summarySamples) {
+    auto previous = previousTime;
+    for (const auto& sample : samples) {
         if (sample.values.size() != data.summaryKeys.size()) {
             OPM_THROW(std::invalid_argument,
                       fmt::format("Each summary sample must contain {} values, got {}",
                                   data.summaryKeys.size(), sample.values.size()));
         }
 
-        if (sample.time < previousTime) {
+        if (sample.time < previous) {
             OPM_THROW(std::invalid_argument,
                       fmt::format("Summary sample times must be non-decreasing, "
-                                  "got {} after {}", sample.time, previousTime));
+                                  "got {} after {}", sample.time, previous));
         }
 
-        previousTime = sample.time;
+        previous = sample.time;
     }
 }
 
@@ -649,12 +877,6 @@ void FluxFile::validateAfterRead(const Data& data)
                               data.boundaryFaces.size(), data.header.numBoundaryFaces));
     }
 
-    if (data.header.numReportSteps != static_cast<int>(data.reportSteps.size())) {
-        OPM_THROW(std::runtime_error,
-                  fmt::format("Report step count {} does not match FLUXHEAD numReportSteps {}",
-                              data.reportSteps.size(), data.header.numReportSteps));
-    }
-
     if (data.header.numPhases != std::popcount(static_cast<unsigned int>(data.header.phaseMask))) {
         OPM_THROW(std::runtime_error,
                   fmt::format("FLUXHEAD numPhases {} does not match phaseMask 0x{:x}",
@@ -665,12 +887,6 @@ void FluxFile::validateAfterRead(const Data& data)
         OPM_THROW(std::runtime_error,
                   fmt::format("Summary key count {} does not match FLUXHEAD numSummaryKeys {}",
                               data.summaryKeys.size(), data.header.numSummaryKeys));
-    }
-
-    if (data.header.numSummarySamples != static_cast<int>(data.summarySamples.size())) {
-        OPM_THROW(std::runtime_error,
-                  fmt::format("Summary sample count {} does not match FLUXHEAD numSummarySamples {}",
-                              data.summarySamples.size(), data.header.numSummarySamples));
     }
 }
 

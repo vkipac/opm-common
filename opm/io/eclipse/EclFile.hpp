@@ -38,9 +38,24 @@ public:
         bool value;
     };
 
+    /// Stop at the last complete array rather than throwing when the file ends
+    /// part way through one.
+    ///
+    /// For files that are appended to as a run proceeds, a torn tail is what a
+    /// process killed during a write leaves behind, and the arrays before it
+    /// are still perfectly good.
+    struct Tolerant {
+        bool value;
+    };
+
     explicit EclFile(const std::string& filename, bool preload = false);
     EclFile(const std::string& filename, Formatted fmt, bool preload = false);
+    EclFile(const std::string& filename, Formatted fmt, Tolerant tol, bool preload = false);
     bool formattedInput() const { return formatted; }
+
+    /// Whether the file ended part way through an array, so that the trailing
+    /// incomplete array was dropped. Only ever true in Tolerant mode.
+    bool isTruncated() const { return this->truncated; }
 
     void loadData();                            // load all data
     void loadData(const std::string& arrName);         // load all arrays with array name equal to arrName
@@ -78,6 +93,8 @@ public:
 
 protected:
     bool formatted;
+    bool tolerant{false};
+    bool truncated{false};
     std::string inputFilename;
 
     std::unordered_map<int, std::vector<int>> inte_array;

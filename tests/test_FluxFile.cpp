@@ -25,6 +25,7 @@
 #include <opm/io/eclipse/EclOutput.hpp>
 #include <opm/io/eclipse/FluxFile.hpp>
 
+#include <filesystem>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -61,7 +62,9 @@ Opm::EclIO::FluxFile::Data sampleData()
     data.header.numSummarySamples = 3;
     data.header.summaryPerTimestep = true;
     data.header.summaryMinSampleInterval = 86400.0;
-    data.header.boundaryPerTimestep = true;
+    // The two records below carry distinct report step numbers, and this flag
+    // is now recovered from that rather than read from the file.
+    data.header.boundaryPerTimestep = false;
     data.header.boundaryMinSampleInterval = 43200.0;
 
     data.names = {"BASE", "REGION_2", "METRIC"};
@@ -111,10 +114,23 @@ Opm::EclIO::FluxFile::Data sampleData()
     return data;
 }
 
+// Append everything in one go. There is no whole-file write: a FLUX file is
+// only ever produced by appending, so even a caller holding the complete data
+// goes through the writer.
+void writeAll(const std::string& filename,
+              const bool formatted,
+              const Opm::EclIO::FluxFile::Data& data)
+{
+    Opm::EclIO::FluxFile::Writer writer(filename, formatted, data);
+    writer.appendRecords(data.reportSteps);
+    writer.appendSummarySamples(data.summarySamples);
+    writer.close();
+}
+
 void expectRoundTrip(const std::string& filename, const bool formatted)
 {
     const auto written = sampleData();
-    Opm::EclIO::FluxFile::write(filename, formatted, written);
+    writeAll(filename, formatted, written);
     const auto readBack = Opm::EclIO::FluxFile::read(filename);
     BOOST_CHECK(readBack == written);
 }
@@ -158,7 +174,7 @@ BOOST_AUTO_TEST_CASE(OnlyPresentPhasesAreWritten)
     WorkArea work;
 
     const auto written = gasOilData();
-    Opm::EclIO::FluxFile::write("GASOIL.FLUX", false, written);
+    writeAll("GASOIL.FLUX", false, written);
 
     Opm::EclIO::EclFile file("GASOIL.FLUX", Opm::EclIO::EclFile::Formatted{false}, true);
     BOOST_CHECK(!file.hasKey("FLXSATW"));
@@ -197,7 +213,7 @@ BOOST_AUTO_TEST_CASE(RejectsMissingRequiredArray)
     WorkArea work;
 
     Opm::EclIO::EclOutput output("MISSING.FLUX", false);
-    output.write("FLUXHEAD", std::vector<int>{4, 20, 30, 10, 2, 9, 1, 19, 10, 10, 4, 2, 1, 3, 0, 1, 1, 7, 0, 0, 0, 0});
+    output.write("FLUXHEAD", std::vector<int>{5, 20, 30, 10, 2, 9, 1, 19, 10, 10, 4, 2, 1, 3, 0, 1, 1, 7, 0, 0, 0, 0});
     output.write("FLUXNAMS", std::vector<std::string>{"BASE", "REGION_2"}, 32);
     output.write("FLUXNCNT", std::vector<int>{2, 0});
     output.write("LOCGLOB", std::vector<int>{1, 2, 3, 4});
@@ -225,7 +241,7 @@ BOOST_AUTO_TEST_CASE(SummarySamplesAreIndependentOfReportSteps)
     BOOST_REQUIRE_EQUAL(written.summarySamples.size(), 3U);
     BOOST_REQUIRE_EQUAL(written.reportSteps.size(), 2U);
 
-    Opm::EclIO::FluxFile::write("SMRY.FLUX", false, written);
+    writeAll("SMRY.FLUX", false, written);
 
     Opm::EclIO::EclFile file("SMRY.FLUX", Opm::EclIO::EclFile::Formatted{false}, true);
     BOOST_CHECK(file.hasKey("SMRYTIME"));
@@ -244,8 +260,81 @@ BOOST_AUTO_TEST_CASE(SummarySamplesAreIndependentOfReportSteps)
     BOOST_CHECK(readBack.header.summaryPerTimestep);
 
     // The boundary cadence metadata travels independently of the summary data.
-    BOOST_CHECK(readBack.header.boundaryPerTimestep);
+    BOOST_CHECK(!readBack.header.boundaryPerTimestep);
     BOOST_CHECK_CLOSE(readBack.header.boundaryMinSampleInterval, 43200.0, 1e-12);
+}
+
+BOOST_AUTO_TEST_CASE(RecordsSharingAReportStepSetTheBoundaryCadence)
+{
+    WorkArea work;
+
+    // Two records under the same report step number is what sub-report-step
+    // boundary output looks like, and the flag is recovered from that rather
+    // than stored: the header is written before any record exists.
+    auto written = sampleData();
+    written.reportSteps[1].reportStep = written.reportSteps[0].reportStep;
+    written.header.boundaryPerTimestep = true;
+
+    writeAll("PERSTEP.FLUX", false, written);
+
+    const auto readBack = Opm::EclIO::FluxFile::read("PERSTEP.FLUX");
+    BOOST_CHECK(readBack.header.boundaryPerTimestep);
+    BOOST_CHECK(readBack == written);
+}
+
+BOOST_AUTO_TEST_CASE(AppendingInChunksMatchesASingleBlock)
+{
+    WorkArea work;
+
+    const auto expected = sampleData();
+
+    writeAll("ONEBLOCK.FLUX", false, expected);
+
+    // The same records, appended one block at a time, the way a running
+    // simulation produces them.
+    {
+        Opm::EclIO::FluxFile::Writer writer("CHUNKED.FLUX", false, expected);
+        for (const auto& step : expected.reportSteps) {
+            writer.appendRecords({step});
+        }
+        for (const auto& sample : expected.summarySamples) {
+            writer.appendSummarySamples({sample});
+        }
+        writer.close();
+    }
+
+    const auto single = Opm::EclIO::FluxFile::read("ONEBLOCK.FLUX");
+    const auto chunked = Opm::EclIO::FluxFile::read("CHUNKED.FLUX");
+
+    BOOST_CHECK(single == expected);
+    BOOST_CHECK(chunked == expected);
+    BOOST_CHECK(chunked == single);
+}
+
+BOOST_AUTO_TEST_CASE(ATruncatedFinalBlockIsDiscardedRatherThanFatal)
+{
+    WorkArea work;
+
+    const auto expected = sampleData();
+
+    {
+        Opm::EclIO::FluxFile::Writer writer("TORN.FLUX", false, expected);
+        writer.appendRecords({expected.reportSteps[0]});
+        writer.appendRecords({expected.reportSteps[1]});
+        writer.close();
+    }
+
+    // Chop the tail, as a run killed part way through a write would leave it.
+    const auto full = std::filesystem::file_size("TORN.FLUX");
+    BOOST_REQUIRE(full > 64U);
+    std::filesystem::resize_file("TORN.FLUX", full - 40U);
+
+    const auto readBack = Opm::EclIO::FluxFile::read("TORN.FLUX");
+
+    // The first block survives intact; the damaged one is gone.
+    BOOST_REQUIRE_EQUAL(readBack.reportSteps.size(), 1U);
+    BOOST_CHECK(readBack.reportSteps[0] == expected.reportSteps[0]);
+    BOOST_CHECK_EQUAL(readBack.header.numReportSteps, 1);
 }
 
 BOOST_AUTO_TEST_CASE(RoundTripWithoutSummarySamples)
@@ -260,7 +349,7 @@ BOOST_AUTO_TEST_CASE(RoundTripWithoutSummarySamples)
     written.header.summaryPerTimestep = false;
     written.header.summaryMinSampleInterval = 0.0;
 
-    Opm::EclIO::FluxFile::write("NOSMRY.FLUX", false, written);
+    writeAll("NOSMRY.FLUX", false, written);
 
     Opm::EclIO::EclFile file("NOSMRY.FLUX", Opm::EclIO::EclFile::Formatted{false}, true);
     BOOST_CHECK(!file.hasKey("SMRYTIME"));
@@ -281,7 +370,7 @@ BOOST_AUTO_TEST_CASE(RejectsInconsistentSummarySampleWidth)
     auto data = sampleData();
     data.summarySamples[1].values.pop_back();
 
-    BOOST_CHECK_THROW(Opm::EclIO::FluxFile::write("BADWIDTH.FLUX", false, data),
+    BOOST_CHECK_THROW(writeAll("BADWIDTH.FLUX", false, data),
                       std::invalid_argument);
 }
 
@@ -292,17 +381,26 @@ BOOST_AUTO_TEST_CASE(RejectsDecreasingSummarySampleTimes)
     auto data = sampleData();
     data.summarySamples[2].time = data.summarySamples[1].time - 1.0;
 
-    BOOST_CHECK_THROW(Opm::EclIO::FluxFile::write("BADTIME.FLUX", false, data),
+    BOOST_CHECK_THROW(writeAll("BADTIME.FLUX", false, data),
                       std::invalid_argument);
 }
 
-BOOST_AUTO_TEST_CASE(RejectsSummarySampleCountMismatch)
+BOOST_AUTO_TEST_CASE(RecordAndSampleCountsAreDerivedNotTrusted)
 {
     WorkArea work;
 
+    // The header is written before a single record exists, so its counts
+    // cannot be right and are not read back. Whatever nonsense is in the
+    // struct on the way in, what comes out is what the file actually holds.
     auto data = sampleData();
+    data.header.numReportSteps = 99;
     data.header.numSummarySamples = 99;
 
-    BOOST_CHECK_THROW(Opm::EclIO::FluxFile::write("BADCOUNT.FLUX", false, data),
-                      std::invalid_argument);
+    writeAll("COUNTS.FLUX", false, data);
+
+    const auto readBack = Opm::EclIO::FluxFile::read("COUNTS.FLUX");
+    BOOST_CHECK_EQUAL(readBack.header.numReportSteps, 2);
+    BOOST_CHECK_EQUAL(readBack.header.numSummarySamples, 3);
+    BOOST_CHECK_EQUAL(readBack.reportSteps.size(), 2U);
+    BOOST_CHECK_EQUAL(readBack.summarySamples.size(), 3U);
 }
