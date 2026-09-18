@@ -357,9 +357,8 @@ void FluxFile::Writer::appendRecords(const std::vector<ReportStep>& records)
     };
 
     if ((static_cast<int>(header.mode) & static_cast<int>(Mode::Flux)) != 0) {
-        output.write("FLXRATE", flattenVectorsPadded(records, &ReportStep::rates,
+        output.write("FLXMASS", flattenVectorsPadded(records, &ReportStep::massRates,
                                                      perFacePhaseValues));
-        emit("FLXMASS", &ReportStep::massRates, perFacePhaseValues);
     }
 
     if ((static_cast<int>(header.mode) & static_cast<int>(Mode::Pressure)) != 0) {
@@ -617,7 +616,6 @@ FluxFile::Data FluxFile::read(const std::string& filename, bool preload)
                     }
                 };
 
-                split("FLXRATE", &ReportStep::rates, perFacePhaseValues);
                 split("FLXMASS", &ReportStep::massRates, perFacePhaseValues);
                 split("FLXKR", &ReportStep::relPerm, perFacePhaseValues);
                 split("FLXPC", &ReportStep::capPressure, perFacePhaseValues);
@@ -772,13 +770,7 @@ void FluxFile::validateRecordsForWrite(const Data& data,
     const auto perFacePhaseValues = perFaceValues * static_cast<std::size_t>(data.header.numPhases);
 
     for (const auto& step : records) {
-        if (fluxEnabled && step.rates.size() != perFacePhaseValues) {
-            OPM_THROW(std::invalid_argument,
-                      fmt::format("Each FLXRATE step must contain {} values, got {}",
-                                  perFacePhaseValues, step.rates.size()));
-        }
-
-        if (!step.massRates.empty() && (step.massRates.size() != perFacePhaseValues)) {
+        if (fluxEnabled && step.massRates.size() != perFacePhaseValues) {
             OPM_THROW(std::invalid_argument,
                       fmt::format("Each FLXMASS step must contain {} values, got {}",
                                   perFacePhaseValues, step.massRates.size()));

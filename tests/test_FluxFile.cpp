@@ -74,34 +74,36 @@ Opm::EclIO::FluxFile::Data sampleData()
         {2, 3, 288, 2.5},
     };
     data.summaryKeys = {"FOPR", "GGPR"};
-    data.reportSteps = {
-        {
-            0,
-            0,
-            0.0,
-            0.5,
-            {10.0, 11.0, 12.0, 20.0, 21.0, 22.0},
-            {200.0, 210.0},
-            {0.15, 0.25},
-            {0.05, 0.15},
-            {100.0, 110.0},
-            {5.0, 6.0},
-            {330.0, 331.0},
-        },
-        {
-            1,
-            3,
-            0.5,
-            28.0,
-            {13.0, 14.0, 15.0, 23.0, 24.0, 25.0},
-            {220.0, 230.0},
-            {0.16, 0.26},
-            {0.06, 0.16},
-            {120.0, 130.0},
-            {7.0, 8.0},
-            {332.0, 333.0},
-        },
-    };
+
+    data.reportSteps.resize(2);
+    {
+        auto& step = data.reportSteps[0];
+        step.reportStep = 0;
+        step.simStep = 0;
+        step.startTime = 0.0;
+        step.stepLength = 0.5;
+        step.massRates = {10.0, 11.0, 12.0, 20.0, 21.0, 22.0};
+        step.pressures = {200.0, 210.0};
+        step.swat = {0.15, 0.25};
+        step.sgas = {0.05, 0.15};
+        step.rs = {100.0, 110.0};
+        step.rv = {5.0, 6.0};
+        step.temperature = {330.0, 331.0};
+    }
+    {
+        auto& step = data.reportSteps[1];
+        step.reportStep = 1;
+        step.simStep = 3;
+        step.startTime = 0.5;
+        step.stepLength = 28.0;
+        step.massRates = {13.0, 14.0, 15.0, 23.0, 24.0, 25.0};
+        step.pressures = {220.0, 230.0};
+        step.swat = {0.16, 0.26};
+        step.sgas = {0.06, 0.16};
+        step.rs = {120.0, 130.0};
+        step.rv = {7.0, 8.0};
+        step.temperature = {332.0, 333.0};
+    }
 
     // Summary samples are deliberately independent of the report-step
     // sequence: three samples spanning two report steps.
@@ -145,9 +147,9 @@ Opm::EclIO::FluxFile::Data gasOilData()
                           | static_cast<int>(FluxFile::Phase::Gas);
 
     for (auto& step : data.reportSteps) {
-        step.rates = {
-            step.rates[0], step.rates[2],
-            step.rates[3], step.rates[5],
+        step.massRates = {
+            step.massRates[0], step.massRates[2],
+            step.massRates[3], step.massRates[5],
         };
         step.swat.clear();
     }
@@ -203,7 +205,7 @@ BOOST_AUTO_TEST_CASE(RejectsUnsupportedVersion)
     output.write("FLXSIM", std::vector<int>{0});
     output.write("FLXTIME", std::vector<double>{0.0});
     output.write("FLXDT", std::vector<double>{1.0});
-    output.write("FLXRATE", std::vector<double>{1.0, 2.0, 3.0, 4.0, 5.0, 6.0});
+    output.write("FLXMASS", std::vector<double>{1.0, 2.0, 3.0, 4.0, 5.0, 6.0});
 
     BOOST_CHECK_THROW(Opm::EclIO::FluxFile::read("BADVERSION.FLUX"), std::runtime_error);
 }
@@ -213,7 +215,7 @@ BOOST_AUTO_TEST_CASE(RejectsMissingRequiredArray)
     WorkArea work;
 
     Opm::EclIO::EclOutput output("MISSING.FLUX", false);
-    output.write("FLUXHEAD", std::vector<int>{5, 20, 30, 10, 2, 9, 1, 19, 10, 10, 4, 2, 1, 3, 0, 1, 1, 7, 0, 0, 0, 0});
+    output.write("FLUXHEAD", std::vector<int>{6, 20, 30, 10, 2, 9, 1, 19, 10, 10, 4, 2, 1, 3, 0, 1, 1, 7, 0, 0, 0, 0});
     output.write("FLUXNAMS", std::vector<std::string>{"BASE", "REGION_2"}, 32);
     output.write("FLUXNCNT", std::vector<int>{2, 0});
     output.write("LOCGLOB", std::vector<int>{1, 2, 3, 4});
@@ -224,7 +226,7 @@ BOOST_AUTO_TEST_CASE(RejectsMissingRequiredArray)
     output.write("FLXSIM", std::vector<int>{0});
     output.write("FLXTIME", std::vector<double>{0.0});
     output.write("FLXDT", std::vector<double>{1.0});
-    output.write("FLXRATE", std::vector<double>{1.0, 2.0, 3.0, 4.0, 5.0, 6.0});
+    output.write("FLXMASS", std::vector<double>{1.0, 2.0, 3.0, 4.0, 5.0, 6.0});
 
     BOOST_CHECK_THROW(Opm::EclIO::FluxFile::read("MISSING.FLUX"), std::runtime_error);
 }

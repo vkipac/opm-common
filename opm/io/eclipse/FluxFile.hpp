@@ -154,9 +154,6 @@ public:
         int simStep = 0;
         double startTime = 0.0;
         double stepLength = 0.0;
-        // Flattened face-major, then active phases in canonical Oil/Water/Gas
-        // order filtered by Header::phaseMask.
-        std::vector<double> rates;
         std::vector<double> pressures;
         std::vector<double> swat;
         std::vector<double> sgas;
@@ -164,25 +161,23 @@ public:
         std::vector<double> rv;
         std::vector<double> temperature;
 
-        /// Component mass rates across each boundary face, in the same
-        /// face-major layout as \c rates, positive into the sector.
+        /// Component mass rates across each boundary face, flattened
+        /// face-major then over the active phases in canonical Oil/Water/Gas
+        /// order filtered by Header::phaseMask, positive into the sector.
         ///
-        /// These are COMPONENT masses, not phase masses: the oil entry is the
-        /// mass of the oil component in both phases and the gas entry is the
-        /// mass of the gas component in both phases. The producing run forms
-        /// them from its own flux and the UPWIND cell's inverse formation
-        /// volume factor, Rs and Rv, using the INTERIOR cell's reference
-        /// densities so that the consumer's conversion back to surface volumes
-        /// is exact.
+        /// This is the whole of the Flux-mode payload. These are COMPONENT
+        /// masses, not phase masses: the oil entry is the mass of the oil
+        /// component in both phases and the gas entry is the mass of the gas
+        /// component in both phases. The producing run forms them from its own
+        /// flux and the UPWIND cell's inverse formation volume factor, Rs and
+        /// Rv, using the INTERIOR cell's reference densities so that the
+        /// consumer's conversion back to surface volumes is exact.
         ///
-        /// A consumer can impose them directly. That matters because for flow
-        /// entering the sector the upstream cell lies outside it, so the
-        /// consumer would otherwise have to substitute its own state; and
-        /// because splitting a phase mass by Rs/Rv after the fact is not
-        /// possible without that state.
-        ///
-        /// Declared last so that existing aggregate initialisation of the
-        /// preceding members keeps working. Empty when unavailable.
+        /// The phase volumetric fluxes they were built from are deliberately
+        /// not also stored. A consumer cannot use them: for flow entering the
+        /// sector the upstream cell lies outside it, so there is no state with
+        /// which to convert them, and splitting a phase flux by Rs/Rv after
+        /// the fact needs exactly that state.
         std::vector<double> massRates;
 
         /// Relative permeability of the exterior cell, face-major over the
@@ -255,6 +250,9 @@ public:
 
     static constexpr int formatVersion()
     {
+        // 6: FLXRATE dropped. The phase volumetric fluxes duplicated FLXMASS,
+        //    which is what a consumer actually imposes, and could not be used
+        //    on their own for inflow anyway.
         // 5: Record data is written as repeated self-contained blocks rather
         //    than one flat array per quantity spanning the whole run, so that
         //    records can be appended instead of the file being rewritten.
@@ -262,7 +260,7 @@ public:
         // 3: FLXMASS holds component masses. Version 2 wrote phase masses
         //    there, which a consumer cannot split by Rs/Rv, so those files
         //    are rejected rather than silently misread.
-        return 5;
+        return 6;
     }
 
     /// Incremental writer for a FLUX file.
