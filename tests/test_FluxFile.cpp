@@ -196,10 +196,10 @@ BOOST_AUTO_TEST_CASE(RejectsUnsupportedVersion)
     output.write("FLUXHEAD", std::vector<int>{99, 20, 30, 10, 2, 9, 1, 19, 10, 10, 4, 2, 1, 3, 0, 1, 1, 7, 0, 0, 0, 0});
     output.write("FLUXNAMS", std::vector<std::string>{"BASE", "REGION_2"}, 32);
     output.write("FLUXNCNT", std::vector<int>{2, 0});
-    output.write("LOCGLOB", std::vector<int>{1, 2, 3, 4});
-    output.write("FLUXCELL", std::vector<int>{0, 1});
-    output.write("FLUXDIR", std::vector<int>{0, 1});
-    output.write("FLUXNNC", std::vector<int>{10, 11});
+    output.write("LOC2GLOB", std::vector<int>{1, 2, 3, 4});
+    output.write("FACECELL", std::vector<int>{0, 1});
+    output.write("FACEDIR", std::vector<int>{0, 1});
+    output.write("FACEGLNB", std::vector<int>{10, 11});
     output.write("FLUXTRAN", std::vector<double>{1.0, 2.0});
     output.write("FLXSTEP", std::vector<int>{0});
     output.write("FLXSIM", std::vector<int>{0});
@@ -215,12 +215,12 @@ BOOST_AUTO_TEST_CASE(RejectsMissingRequiredArray)
     WorkArea work;
 
     Opm::EclIO::EclOutput output("MISSING.FLUX", false);
-    output.write("FLUXHEAD", std::vector<int>{6, 20, 30, 10, 2, 9, 1, 19, 10, 10, 4, 2, 1, 3, 0, 1, 1, 7, 0, 0, 0, 0});
+    output.write("FLUXHEAD", std::vector<int>{7, 20, 30, 10, 2, 9, 1, 19, 10, 10, 4, 2, 1, 3, 0, 1, 1, 7, 0, 0, 0, 0});
     output.write("FLUXNAMS", std::vector<std::string>{"BASE", "REGION_2"}, 32);
     output.write("FLUXNCNT", std::vector<int>{2, 0});
-    output.write("LOCGLOB", std::vector<int>{1, 2, 3, 4});
-    output.write("FLUXCELL", std::vector<int>{0, 1});
-    output.write("FLUXDIR", std::vector<int>{0, 1});
+    output.write("LOC2GLOB", std::vector<int>{1, 2, 3, 4});
+    output.write("FACECELL", std::vector<int>{0, 1});
+    output.write("FACEDIR", std::vector<int>{0, 1});
     output.write("FLUXTRAN", std::vector<double>{1.0, 2.0});
     output.write("FLXSTEP", std::vector<int>{0});
     output.write("FLXSIM", std::vector<int>{0});

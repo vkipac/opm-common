@@ -250,6 +250,10 @@ public:
 
     static constexpr int formatVersion()
     {
+        // 7: The boundary geometry arrays are named for what they describe:
+        //    LOC2GLOB, FACECELL, FACEDIR and FACEGLNB, replacing LOCGLOB,
+        //    FLUXCELL, FLUXDIR and FLUXNNC. FACEGLNB in particular holds the
+        //    global neighbour of every face, not just of the NNC ones.
         // 6: FLXRATE dropped. The phase volumetric fluxes duplicated FLXMASS,
         //    which is what a consumer actually imposes, and could not be used
         //    on their own for inflow anyway.
@@ -260,7 +264,7 @@ public:
         // 3: FLXMASS holds component masses. Version 2 wrote phase masses
         //    there, which a consumer cannot split by Rs/Rv, so those files
         //    are rejected rather than silently misread.
-        return 6;
+        return 7;
     }
 
     /// Incremental writer for a FLUX file.

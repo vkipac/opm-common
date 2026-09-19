@@ -301,10 +301,10 @@ void FluxFile::Writer::writeStaticSection()
     output.write("FLUXNAMS", makeNames(data), 32);
     output.write("FLUXNCNT", std::vector<int>{static_cast<int>(data.names.size()),
                                               static_cast<int>(data.summaryKeys.size())});
-    output.write("LOCGLOB", data.localToGlobal);
-    output.write("FLUXCELL", flattenBoundary(data.boundaryFaces, &BoundaryFace::interiorLocalCell));
-    output.write("FLUXDIR", flattenBoundary(data.boundaryFaces, &BoundaryFace::direction));
-    output.write("FLUXNNC", flattenBoundary(data.boundaryFaces, &BoundaryFace::exteriorGlobalCell));
+    output.write("LOC2GLOB", data.localToGlobal);
+    output.write("FACECELL", flattenBoundary(data.boundaryFaces, &BoundaryFace::interiorLocalCell));
+    output.write("FACEDIR", flattenBoundary(data.boundaryFaces, &BoundaryFace::direction));
+    output.write("FACEGLNB", flattenBoundary(data.boundaryFaces, &BoundaryFace::exteriorGlobalCell));
     output.write("FLUXTRAN", flattenBoundary(data.boundaryFaces, &BoundaryFace::transmissibility));
     output.write("FLXPVTN", flattenBoundary(data.boundaryFaces, &BoundaryFace::exteriorPvtRegion));
     output.write("FLXMINT", std::vector<double>{data.header.boundaryMinSampleInterval});
@@ -430,10 +430,10 @@ FluxFile::Data FluxFile::read(const std::string& filename, bool preload)
     requireArray<int>(file, "FLUXHEAD");
     requireArray<std::string>(file, "FLUXNAMS");
     requireArray<int>(file, "FLUXNCNT");
-    requireArray<int>(file, "LOCGLOB");
-    requireArray<int>(file, "FLUXCELL");
-    requireArray<int>(file, "FLUXDIR");
-    requireArray<int>(file, "FLUXNNC");
+    requireArray<int>(file, "LOC2GLOB");
+    requireArray<int>(file, "FACECELL");
+    requireArray<int>(file, "FACEDIR");
+    requireArray<int>(file, "FACEGLNB");
     requireArray<double>(file, "FLUXTRAN");
 
     Data data;
@@ -462,11 +462,11 @@ FluxFile::Data FluxFile::read(const std::string& filename, bool preload)
 
     data.names.assign(fluxnams.begin(), fluxnams.begin() + numNames);
     data.summaryKeys.assign(fluxnams.begin() + numNames, fluxnams.end());
-    data.localToGlobal = file.get<int>("LOCGLOB");
+    data.localToGlobal = file.get<int>("LOC2GLOB");
 
-    const auto& fluxCell = file.get<int>("FLUXCELL");
-    const auto& fluxDir = file.get<int>("FLUXDIR");
-    const auto& fluxNnc = file.get<int>("FLUXNNC");
+    const auto& fluxCell = file.get<int>("FACECELL");
+    const auto& fluxDir = file.get<int>("FACEDIR");
+    const auto& fluxNnc = file.get<int>("FACEGLNB");
     const auto& fluxTran = file.get<double>("FLUXTRAN");
     if (!(fluxCell.size() == fluxDir.size() && fluxDir.size() == fluxNnc.size() && fluxNnc.size() == fluxTran.size())) {
         OPM_THROW(std::runtime_error, "Boundary face arrays in FLUX file have inconsistent sizes");
@@ -738,7 +738,7 @@ void FluxFile::validateStaticForWrite(const Data& data)
 
     if (data.header.numCells != static_cast<int>(data.localToGlobal.size())) {
         OPM_THROW(std::invalid_argument,
-                  fmt::format("Header numCells {} does not match LOCGLOB size {}",
+                  fmt::format("Header numCells {} does not match LOC2GLOB size {}",
                               data.header.numCells, data.localToGlobal.size()));
     }
 
@@ -859,7 +859,7 @@ void FluxFile::validateAfterRead(const Data& data)
 {
     if (data.header.numCells != static_cast<int>(data.localToGlobal.size())) {
         OPM_THROW(std::runtime_error,
-                  fmt::format("LOCGLOB size {} does not match FLUXHEAD numCells {}",
+                  fmt::format("LOC2GLOB size {} does not match FLUXHEAD numCells {}",
                               data.localToGlobal.size(), data.header.numCells));
     }
 
