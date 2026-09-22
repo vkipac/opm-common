@@ -2308,6 +2308,7 @@ WELSEGS
   'PROD01' 2000 2000 1* ABS /
   2 2 1 1 2100 2000 0.2 1.0E-4 /
   3 3 1 2 2200 2000 0.2 1.0E-4 /
+  4 4 1 3 2300 2000 0.2 1.0E-4 /
 /
 
 COMPSEGS
@@ -2333,6 +2334,7 @@ ACTIONX
   BUFOO > 0.0 AND /
   CUFOO > 0.0 AND /
   SUFOO > 0.0 AND /
+  SUFOO 'PROD01' 1 > 0.0 AND /
   FUBAR > 0.0 /
 /
 
@@ -2364,17 +2366,21 @@ END
     BOOST_CHECK_MESSAGE(smry.hasSummaryKey("SUFOO:PROD01:3"),
                         R"(FLUXALL must report a segment UDQ for the segment it is assigned to)");
 
-    // The other way in. FUBAR is defined in terms of segment 2 of PROD01,
-    // which no assignment covers, so this naming is the only record of it.
+    // The other two ways in, neither of which the assignment covers. FUBAR is
+    // defined in terms of segment 2, and the ACTIONX names segment 1 outright
+    // -- the form a real deck is most likely to use, and the one that reaches
+    // a segment nothing else in the deck mentions.
     BOOST_CHECK_MESSAGE(smry.hasSummaryKey("SUFOO:PROD01:2"),
                         R"(FLUXALL must report a segment UDQ another UDQ is defined in terms of)");
 
-    // And nowhere else. The assignment says which objects the quantity exists
-    // for, so it also says which objects it does not.
+    BOOST_CHECK_MESSAGE(smry.hasSummaryKey("SUFOO:PROD01:1"),
+                        R"(FLUXALL must report a segment UDQ an ACTIONX condition names in full)");
+
+    // And nowhere else. Segment 4 exists and is never named, so it stays out.
     BOOST_CHECK_MESSAGE(!smry.hasSummaryKey("BUFOO:1"),
                         R"(FLUXALL must not report a block UDQ for a cell it is not assigned to)");
 
-    BOOST_CHECK_MESSAGE(!smry.hasSummaryKey("SUFOO:PROD01:1"),
+    BOOST_CHECK_MESSAGE(!smry.hasSummaryKey("SUFOO:PROD01:4"),
                         R"(FLUXALL must not report a segment UDQ nothing names)");
 }
 
