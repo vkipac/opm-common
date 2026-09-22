@@ -542,6 +542,13 @@ namespace Opm {
         /// also contains any such vector named by these definitions.
         void requisiteSummaryVectors(RequisiteSummaryVectors& vectors) const;
 
+        /// Export the user defined quantities the definitions in this
+        /// configuration refer to.
+        ///
+        /// \param[in,out] udqs Names of user defined quantities.  On exit
+        /// also contains those these definitions refer to.
+        void requiredUDQs(std::unordered_set<std::string>& udqs) const;
+
         /// Convert between byte array and object representation.
         ///
         /// \tparam Serializer Byte array conversion protocol.

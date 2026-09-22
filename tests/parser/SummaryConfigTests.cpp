@@ -2118,6 +2118,116 @@ END
                         R"(FLUXALL must configure "WOPR" for every well)");
 }
 
+BOOST_AUTO_TEST_CASE(Summary_FLUXALL_UserDefinedQuantities) {
+    // A reduced run recomputes a user defined quantity from its own
+    // definition, so at first sight the parent need not report one. It can
+    // only recompute a UDQ whose inputs it still has, though, and the two
+    // routes into this deck's UDQs are both easy to lose: WUFOUR is named by
+    // an ACTIONX condition, and WUTWICE is named by WUFOUR's definition --
+    // which is precisely the reference UDQDefine::required_summary() drops,
+    // on the grounds that the run computes it.
+    const auto deck = ::Opm::Parser{}.parseString(R"(RUNSPEC
+START
+  21 SEP 2020 12:34:56 /
+
+DIMENS
+  10 10 3 /
+
+WELLDIMS
+  2 10 2 2 /
+
+UDQDIMS
+  10 2 0 10 10 10 0 10 /
+
+ACTDIMS
+  4 40 20 20 /
+
+GRID
+
+DXV
+  10*100.0
+/
+
+DYV
+  10*100.0
+/
+
+DZV
+  5 3 2
+/
+
+DEPTHZ
+  121*2000.0
+/
+
+PORO
+  300*0.15
+/
+
+PERMX
+  300*100.0
+/
+
+COPY
+  PERMX PERMY /
+  PERMX PERMZ /
+/
+
+SUMMARY
+
+FLUXALL
+
+SCHEDULE
+
+WELSPECS
+  'PROD01' 'G1' 1 1 1* 'OIL' /
+/
+
+COMPDAT
+  'PROD01' 1 1 1 3 'OPEN' 1* 1* 0.5 /
+/
+
+UDQ
+  DEFINE WUTWICE WBHP * 2 /
+  UNITS  WUTWICE BARSA /
+  DEFINE WUFOUR WUTWICE * 2 /
+  UNITS  WUFOUR BARSA /
+/
+
+ACTIONX
+  ACT1 10 1 /
+  WUFOUR 'PROD01' > 0.0 /
+/
+
+WELOPEN
+  'PROD01' 'SHUT' /
+/
+
+ENDACTIO
+
+TSTEP
+  10 /
+END
+)");
+
+    ErrorGuard errors;
+    const auto parseContext = ParseContext{};
+    const auto state = EclipseState (deck);
+    const auto schedule = Schedule (deck, state, parseContext, errors, std::make_shared<const Python>());
+    const auto smry = SummaryConfig(deck, schedule, state.fieldProps(), state.aquifer(), parseContext, errors);
+
+    BOOST_CHECK_MESSAGE(smry.hasSummaryKey("WUFOUR:PROD01"),
+                        R"(FLUXALL must report a UDQ an ACTIONX compares against)");
+
+    BOOST_CHECK_MESSAGE(smry.hasSummaryKey("WUTWICE:PROD01"),
+                        R"(FLUXALL must report a UDQ another UDQ is defined in terms of)");
+
+    // And what the chain bottoms out in, which is what made the UDQs worth
+    // reporting in the first place.
+    BOOST_CHECK_MESSAGE(smry.hasSummaryKey("WBHP:PROD01"),
+                        R"(FLUXALL must report the summary vector at the foot of the chain)");
+}
+
 BOOST_AUTO_TEST_CASE(ProcessingInstructions) {
     const std::string deck_string = R"(
 RPTONLY

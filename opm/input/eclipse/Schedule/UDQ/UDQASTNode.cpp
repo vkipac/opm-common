@@ -307,6 +307,29 @@ void UDQASTNode::required_summary(std::unordered_set<std::string>& summary_keys)
     }
 }
 
+void UDQASTNode::requiredUDQs(std::unordered_set<std::string>& udqs) const
+{
+    // The mirror image of required_summary(): what that one filters out is
+    // exactly what this one is after.
+    if ((this->type == UDQTokenType::ecl_expr) &&
+        std::holds_alternative<std::string>(this->value))
+    {
+        if (const auto& keyword = std::get<std::string>(this->value);
+            is_udq(keyword))
+        {
+            udqs.insert(keyword);
+        }
+    }
+
+    if (this->left) {
+        this->left->requiredUDQs(udqs);
+    }
+
+    if (this->right) {
+        this->right->requiredUDQs(udqs);
+    }
+}
+
 void UDQASTNode::requisiteSummaryVectors(RequisiteSummaryVectors& vectors) const
 {
     // A selector holding a template -- 'OP*' -- picks out whichever objects

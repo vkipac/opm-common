@@ -422,6 +422,13 @@ namespace {
     //!   set, plus the well rates and cumulatives a reduced run needs to
     //!   account for the wells it does not contain.
     //!
+    //!   User defined quantities are in the list too, whenever an ACTIONX
+    //!   condition or another UDQ refers to one. A reduced run recomputes
+    //!   those from their own definitions, so at first sight the parent need
+    //!   not report them -- but it can only recompute one whose inputs it
+    //!   still has, and an ASSIGN has no inputs at all. Reporting them costs
+    //!   one vector each and removes the question.
+    //!
     //!   Note that these are bare keywords. Expanding them over the objects
     //!   they apply to is left to the caller, which has the region sets and
     //!   the aquifer IDs that this function does not.
@@ -439,9 +446,16 @@ namespace {
 
         for (const auto& udq : schedule.unique<UDQConfig>()) {
             udq.second.required_summary(keywords);
+
+            // A UDQ definition's requirements stop at the summary vectors it
+            // reads; the UDQs it reads are filtered out, on the grounds that
+            // the run computes those. Ask for the other half as well.
+            udq.second.requiredUDQs(keywords);
         }
 
         for (const auto& action : schedule.back().actions.get()) {
+            // ACTIONX makes no such distinction: a condition comparing
+            // against a UDQ reports the UDQ's name here.
             action.required_summary(keywords);
         }
 
@@ -2435,14 +2449,19 @@ void handleFLUXALL(SummaryConfig::keyword_list&    list,
     using Cat = SummaryConfigNode::Category;
 
     const auto named = FLUXALL_namedVectors(schedule);
+    const auto& udqConfig = schedule.getUDQConfig(schedule.size() - 1);
 
     auto unexpanded = std::vector<std::string>{};
+    auto undefined = std::vector<std::string>{};
 
     for (const auto& keyword : FLUXALL_keywords(schedule)) {
-        if (is_udq(keyword)) {
-            // An ACTIONX condition may compare against a user defined
-            // quantity. The run computes that itself, from the vectors the
-            // UDQ's own definition asks for, which are in this list too.
+        if (is_udq(keyword) &&
+            (! udqConfig.has_keyword(keyword) || ! udqConfig.has_unit(keyword)))
+        {
+            // A user defined quantity that the SCHEDULE section never defines,
+            // or never gives a unit, cannot be reported. Something refers to
+            // it, though, so this is worth saying out loud.
+            undefined.push_back(keyword);
             continue;
         }
 
@@ -2497,6 +2516,17 @@ void handleFLUXALL(SummaryConfig::keyword_list&    list,
         }
             break;
         }
+    }
+
+    if (! undefined.empty()) {
+        OpmLog::warning(OpmInputError::format
+                        (fmt::format("FLUXALL cannot report {} user defined "
+                                     "quantit(y/ies) in {{file}} line {{line}}, "
+                                     "because the SCHEDULE section gives them "
+                                     "no definition or no unit:\n  {}",
+                                     undefined.size(),
+                                     fmt::join(undefined, ", ")),
+                         fluxall_location));
     }
 
     if (unexpanded.empty()) {

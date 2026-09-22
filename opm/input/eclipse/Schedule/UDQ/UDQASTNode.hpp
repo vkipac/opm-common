@@ -75,6 +75,17 @@ public:
     bool operator==(const UDQASTNode& data) const;
     void required_summary(std::unordered_set<std::string>& summary_keys) const;
 
+    /// Export the user defined quantities this node refers to.
+    ///
+    /// The mirror image of required_summary(), which filters them out on the
+    /// grounds that the run computes them itself. Anyone who has to arrange
+    /// for them to exist wants the other half.
+    ///
+    /// \param[in,out] udqs Names of user defined quantities.  On exit also
+    /// contains those referred to by this node and, recursively, its
+    /// children.
+    void requiredUDQs(std::unordered_set<std::string>& udqs) const;
+
     /// Export the summary vectors this node names in full.
     ///
     /// An expression such as \code BPR 10 10 3 \endcode says exactly which
