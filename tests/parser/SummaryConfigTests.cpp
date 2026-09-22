@@ -2327,6 +2327,7 @@ UDQ
   UNITS  SUFOO BARSA /
   DEFINE FUBAR SUFOO 'PROD01' 2 /
   UNITS  FUBAR BARSA /
+  DEFINE FUNITLESS SUFOO 'PROD01' 3 /
 /
 
 ACTIONX
@@ -2335,7 +2336,8 @@ ACTIONX
   CUFOO > 0.0 AND /
   SUFOO > 0.0 AND /
   SUFOO 'PROD01' 1 > 0.0 AND /
-  FUBAR > 0.0 /
+  FUBAR > 0.0 AND /
+  FUNITLESS > 0.0 /
 /
 
 WELOPEN
@@ -2375,6 +2377,13 @@ END
 
     BOOST_CHECK_MESSAGE(smry.hasSummaryKey("SUFOO:PROD01:1"),
                         R"(FLUXALL must report a segment UDQ an ACTIONX condition names in full)");
+
+    // A UDQ with no UNITS entry is reported like any other. The summary
+    // writer has always emitted an empty unit string for one of those, and a
+    // deck naming this quantity in its SUMMARY section outright would get the
+    // vector too, so withholding it here would be a rule of our own making.
+    BOOST_CHECK_MESSAGE(smry.hasSummaryKey("FUNITLESS"),
+                        R"(FLUXALL must report a UDQ that has no unit)");
 
     // And nowhere else. Segment 4 exists and is never named, so it stays out.
     BOOST_CHECK_MESSAGE(!smry.hasSummaryKey("BUFOO:1"),

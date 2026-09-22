@@ -2453,16 +2453,25 @@ void handleFLUXALL(SummaryConfig::keyword_list&    list,
 
     auto unexpanded = std::vector<std::string>{};
     auto undefined = std::vector<std::string>{};
+    auto unitless = std::vector<std::string>{};
 
     for (const auto& keyword : FLUXALL_keywords(schedule)) {
-        if (is_udq(keyword) &&
-            (! udqConfig.has_keyword(keyword) || ! udqConfig.has_unit(keyword)))
-        {
-            // A user defined quantity that the SCHEDULE section never defines,
-            // or never gives a unit, cannot be reported. Something refers to
-            // it, though, so this is worth saying out loud.
-            undefined.push_back(keyword);
-            continue;
+        if (is_udq(keyword)) {
+            if (! udqConfig.has_keyword(keyword)) {
+                // A user defined quantity the SCHEDULE section never defines
+                // cannot be reported. Something refers to it, though, so this
+                // is worth saying out loud.
+                undefined.push_back(keyword);
+                continue;
+            }
+
+            if (! udqConfig.has_unit(keyword)) {
+                // A missing UNITS entry is no reason to withhold the vector.
+                // The summary writer has always emitted an empty unit string
+                // for a UDQ that has none, and a deck naming this quantity in
+                // its SUMMARY section outright would get the vector too.
+                unitless.push_back(keyword);
+            }
         }
 
         auto location = fluxall_location;
@@ -2523,10 +2532,21 @@ void handleFLUXALL(SummaryConfig::keyword_list&    list,
                         (fmt::format("FLUXALL cannot report {} user defined "
                                      "quantit(y/ies) in {{file}} line {{line}}, "
                                      "because the SCHEDULE section gives them "
-                                     "no definition or no unit:\n  {}",
+                                     "no definition:\n  {}",
                                      undefined.size(),
                                      fmt::join(undefined, ", ")),
                          fluxall_location));
+    }
+
+    if (! unitless.empty()) {
+        OpmLog::info(OpmInputError::format
+                     (fmt::format("FLUXALL is reporting {} user defined "
+                                  "quantit(y/ies) with no unit, from {{file}} "
+                                  "line {{line}}, the SCHEDULE section giving "
+                                  "them no UNITS entry:\n  {}",
+                                  unitless.size(),
+                                  fmt::join(unitless, ", ")),
+                      fluxall_location));
     }
 
     if (unexpanded.empty()) {
