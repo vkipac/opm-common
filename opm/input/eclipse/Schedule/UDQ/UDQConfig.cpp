@@ -675,6 +675,13 @@ namespace Opm {
         }
     }
 
+    void UDQConfig::requisiteSummaryVectors(RequisiteSummaryVectors& vectors) const
+    {
+        for (const auto& def_pair : this->m_definitions) {
+            def_pair.second.requisiteSummaryVectors(vectors);
+        }
+    }
+
     // ===========================================================================
     // Private member functions below separator
     // ===========================================================================

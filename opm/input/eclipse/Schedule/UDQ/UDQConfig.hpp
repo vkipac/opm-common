@@ -532,6 +532,16 @@ namespace Opm {
         /// this set.
         void required_summary(std::unordered_set<std::string>& summary_keys) const;
 
+        /// Export the summary vectors the definitions in this configuration
+        /// name in full.
+        ///
+        /// Assignments contribute nothing: a UDQ ASSIGN gives a numeric value
+        /// to a selection of objects and never refers to a summary vector.
+        ///
+        /// \param[in,out] vectors Summary vectors named in full.  On exit
+        /// also contains any such vector named by these definitions.
+        void requisiteSummaryVectors(RequisiteSummaryVectors& vectors) const;
+
         /// Convert between byte array and object representation.
         ///
         /// \tparam Serializer Byte array conversion protocol.

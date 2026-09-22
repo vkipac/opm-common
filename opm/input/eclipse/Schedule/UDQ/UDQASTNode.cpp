@@ -26,6 +26,7 @@
 #include <opm/input/eclipse/Schedule/UDQ/UDQSet.hpp>
 #include <opm/input/eclipse/Schedule/UDQ/UDT.hpp>
 
+#include <algorithm>
 #include <cassert>
 #include <charconv>
 #include <memory>
@@ -306,8 +307,37 @@ void UDQASTNode::required_summary(std::unordered_set<std::string>& summary_keys)
     }
 }
 
-void UDQASTNode::requiredObjects(UDQ::RequisiteEvaluationObjects& objects) const
+void UDQASTNode::requisiteSummaryVectors(RequisiteSummaryVectors& vectors) const
 {
+    // A selector holding a template -- 'OP*' -- picks out whichever objects
+    // match when the UDQ is evaluated, and an empty selector means every
+    // object the UDQ applies to. Neither names a vector.
+    if ((this->type == UDQTokenType::ecl_expr) &&
+        std::holds_alternative<std::string>(this->value) &&
+        ! this->selector.empty())
+    {
+        const auto& keyword = std::get<std::string>(this->value);
+
+        const auto templated = std::any_of(this->selector.begin(),
+                                           this->selector.end(),
+                                           [](const std::string& item)
+                                           { return item.find('*') != std::string::npos; });
+
+        if (!is_udq(keyword) && !templated) {
+            vectors.insert({ keyword, this->selector });
+        }
+    }
+
+    if (this->left) {
+        this->left->requisiteSummaryVectors(vectors);
+    }
+
+    if (this->right) {
+        this->right->requisiteSummaryVectors(vectors);
+    }
+}
+
+void UDQASTNode::requiredObjects(UDQ::RequisiteEvaluationObjects& objects) const{
     if ((this->type == UDQTokenType::ecl_expr) &&
         std::holds_alternative<std::string>(this->value))
     {

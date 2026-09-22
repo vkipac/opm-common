@@ -20,6 +20,7 @@
 #ifndef UDQASTNODE_HPP
 #define UDQASTNODE_HPP
 
+#include <opm/input/eclipse/Schedule/RequisiteSummaryVector.hpp>
 #include <opm/input/eclipse/Schedule/UDQ/UDQContext.hpp>
 #include <opm/input/eclipse/Schedule/UDQ/UDQEnums.hpp>
 #include <opm/input/eclipse/Schedule/UDQ/UDQSet.hpp>
@@ -73,6 +74,18 @@ public:
     UDQASTNode* get_right() const;
     bool operator==(const UDQASTNode& data) const;
     void required_summary(std::unordered_set<std::string>& summary_keys) const;
+
+    /// Export the summary vectors this node names in full.
+    ///
+    /// An expression such as \code BPR 10 10 3 \endcode says exactly which
+    /// vector it wants, whereas one over a well template does not. Only the
+    /// former are reported here; the rest are covered by required_summary(),
+    /// which yields bare keywords.
+    ///
+    /// \param[in,out] vectors Summary vectors named in full.  On exit also
+    /// contains any such vector named by this node and, recursively, its
+    /// children.
+    void requisiteSummaryVectors(RequisiteSummaryVectors& vectors) const;
 
     /// Populate collection of requisite objects needed to evaluate this node.
     ///

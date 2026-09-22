@@ -21,6 +21,7 @@
 
 #include <opm/common/OpmLog/OpmLog.hpp>
 #include <opm/common/utility/OpmInputError.hpp>
+#include <opm/common/utility/String.hpp>
 #include <opm/common/utility/shmatch.hpp>
 
 #include <opm/input/eclipse/EclipseState/Aquifer/AquiferConfig.hpp>
@@ -32,8 +33,9 @@
 #include <opm/input/eclipse/Schedule/Action/ActionX.hpp>
 #include <opm/input/eclipse/Schedule/Action/Actions.hpp>
 #include <opm/input/eclipse/Schedule/Group/Group.hpp>
-#include <opm/input/eclipse/Schedule/Network/ExtNetwork.hpp>
 #include <opm/input/eclipse/Schedule/MSW/WellSegments.hpp>
+#include <opm/input/eclipse/Schedule/Network/ExtNetwork.hpp>
+#include <opm/input/eclipse/Schedule/RequisiteSummaryVector.hpp>
 #include <opm/input/eclipse/Schedule/Schedule.hpp>
 #include <opm/input/eclipse/Schedule/UDQ/UDQConfig.hpp>
 #include <opm/input/eclipse/Schedule/Well/Connection.hpp>
@@ -55,12 +57,14 @@
 #include <algorithm>
 #include <array>
 #include <cassert>
+#include <charconv>
 #include <cstddef>
 #include <functional>
 #include <iterator>
 #include <limits>
 #include <map>
 #include <memory>
+#include <optional>
 #include <regex>
 #include <set>
 #include <stdexcept>
@@ -456,6 +460,29 @@ namespace {
         return sorted;
     }
 
+    //! \brief The summary vectors the deck's expressions name in full.
+    //!
+    //! \details Most requirements arrive as bare keywords, but block,
+    //!   connection, segment and node quantities have to name their object to
+    //!   mean anything, and that naming is the only record of which vector is
+    //!   wanted. Note that a UDQ ASSIGN contributes nothing here: it gives a
+    //!   numeric value to a selection of objects and never reads a summary
+    //!   vector.
+    RequisiteSummaryVectors FLUXALL_namedVectors(const Schedule& schedule)
+    {
+        auto vectors = RequisiteSummaryVectors{};
+
+        for (const auto& udq : schedule.unique<UDQConfig>()) {
+            udq.second.requisiteSummaryVectors(vectors);
+        }
+
+        for (const auto& action : schedule.back().actions.get()) {
+            action.requisiteSummaryVectors(vectors);
+        }
+
+        return vectors;
+    }
+
     auto meta_keywords()
     {
         using namespace std::string_literals;
@@ -754,11 +781,15 @@ namespace {
         // we need to be able to fill out all node names in the case of a
         // keyword that does not specify any nodes (e.g., "GPR /"), and to
         // check for missing nodes if a keyword is erroneously specified.
+        //
+        // FLUXALL may ask for a node vector on the strength of a UDQ or an
+        // ACTIONX naming one, so it needs the names too.
 
         return std::any_of(sect.begin(), sect.end(),
             [](const DeckKeyword& keyword)
         {
-            return is_node_keyword(keyword.name());
+            return is_node_keyword(keyword.name())
+                || (keyword.name() == "FLUXALL");
         });
     }
 
@@ -2230,6 +2261,150 @@ void handleKW(SummaryConfig::keyword_list& list,
     }
 }
 
+//! \brief Interpret a deck expression's argument as a positive integer.
+std::optional<std::size_t> parsePositiveInt(const std::string& arg)
+{
+    const auto text = trim_copy(arg);
+
+    auto value = 0UL;
+    const auto* end = text.data() + text.size();
+    const auto res = std::from_chars(text.data(), end, value);
+
+    if ((res.ec != std::errc{}) || (res.ptr != end) || (value == 0)) {
+        return std::nullopt;
+    }
+
+    return { static_cast<std::size_t>(value) };
+}
+
+//! \brief The global cell index, one based, of a cell named by I, J and K.
+//!
+//! \return Nothing if the triplet does not parse or falls outside the grid.
+std::optional<int> fluxallCellIndex(const CellIndexMapper& gridDims,
+                                    const std::string&     iArg,
+                                    const std::string&     jArg,
+                                    const std::string&     kArg)
+{
+    const auto i = parsePositiveInt(iArg);
+    const auto j = parsePositiveInt(jArg);
+    const auto k = parsePositiveInt(kArg);
+
+    if (!i.has_value() || !j.has_value() || !k.has_value()) {
+        return std::nullopt;
+    }
+
+    const auto dims = gridDims("");
+
+    if ((dims.getNX() == 0) ||
+        (*i > dims.getNX()) || (*j > dims.getNY()) || (*k > dims.getNZ()))
+    {
+        return std::nullopt;
+    }
+
+    return { 1 + static_cast<int>(dims.getGlobalIndex(*i - 1, *j - 1, *k - 1)) };
+}
+
+//! \brief Configure a single summary vector that a deck expression named in
+//!   full.
+//!
+//! \details Block, connection, segment and node quantities cannot be expanded
+//!   from a keyword, because the keyword says nothing about which cell, well
+//!   or node is meant. When an expression does name one outright, though --
+//!
+//!     BPR 10 10 3 > 250 /
+//!     SPR 'P1' 12 < 100 /
+//!
+//!   -- that is a complete request, and one FLUXALL can honour.
+//!
+//! \return Whether the named object was recognised and the vector configured.
+bool fluxallNamedObject(SummaryConfig::keyword_list&    list,
+                        const RequisiteSummaryVector&   vector,
+                        const KeywordLocation&          location,
+                        const std::vector<std::string>& node_names,
+                        const Schedule&                 schedule,
+                        const CellIndexMapper&          gridDims)
+{
+    using Cat = SummaryConfigNode::Category;
+
+    const auto cat = parseKeywordCategory(vector.keyword);
+    const auto& args = vector.arguments;
+
+    auto param = SummaryConfigNode { vector.keyword, cat, location }
+        .parameterType(parseKeywordType(vector.keyword))
+        .isUserDefined(is_udq(vector.keyword));
+
+    switch (cat) {
+    case Cat::Block: {
+        // BPR 10 10 3
+        if (args.size() != 3) { return false; }
+
+        const auto cell = fluxallCellIndex(gridDims, args[0], args[1], args[2]);
+        if (! cell.has_value()) { return false; }
+
+        list.push_back(param.number(*cell));
+        return true;
+    }
+
+    case Cat::Connection: {
+        // COPR 'P1' 10 10 3
+        if (args.size() != 4) { return false; }
+
+        const auto& well = args.front();
+        if (! schedule.back().wells.has(well)) { return false; }
+
+        const auto cell = fluxallCellIndex(gridDims, args[1], args[2], args[3]);
+        if (! cell.has_value()) { return false; }
+
+        // A connection vector for a cell the well does not perforate would
+        // never hold anything.
+        if (! schedule.back().wells(well).getConnections()
+            .hasGlobalIndex(static_cast<std::size_t>(*cell - 1)))
+        {
+            return false;
+        }
+
+        list.push_back(param.namedEntity(well).number(*cell));
+        return true;
+    }
+
+    case Cat::Segment: {
+        // SPR 'P1' 12
+        if (args.size() != 2) { return false; }
+
+        const auto& well = args.front();
+        if (! schedule.back().wells.has(well)) { return false; }
+
+        const auto& w = schedule.getWellatEnd(well);
+        if (! w.isMultiSegment()) { return false; }
+
+        const auto segment = parsePositiveInt(args.back());
+        if (! segment.has_value() ||
+            (*segment > w.getSegments().size()))
+        {
+            return false;
+        }
+
+        list.push_back(param.namedEntity(well).number(static_cast<int>(*segment)));
+        return true;
+    }
+
+    case Cat::Node: {
+        // GPR 'MANI-B'
+        if (args.size() != 1) { return false; }
+
+        if (std::ranges::find(node_names, args.front()) == node_names.end()) {
+            return false;
+        }
+
+        list.push_back(param.namedEntity(args.front()));
+        return true;
+    }
+
+    default:
+        return false;
+    }
+}
+
 //! \brief Expand the FLUXALL meta keyword.
 //!
 //! \details Unlike ALL and its relatives, FLUXALL does not stand for a fixed
@@ -2239,17 +2414,27 @@ void handleKW(SummaryConfig::keyword_list& list,
 //!   generous -- an expression that mentions WBHP will be evaluated against
 //!   whichever well the ACTIONX matches, and which well that is cannot be
 //!   known until the run gets there.
-void handleFLUXALL(SummaryConfig::keyword_list& list,
-                   const KeywordLocation&       fluxall_location,
-                   const std::vector<int>&      analyticAquiferIDs,
-                   const std::vector<int>&      numericAquiferIDs,
-                   const Schedule&              schedule,
-                   const FieldPropsManager&     field_props,
-                   SummaryConfigContext&        context,
-                   const ParseContext&          parseContext,
-                   ErrorGuard&                  errors)
+//!
+//!   Block, connection, segment and node quantities cannot be expanded that
+//!   way: covering every cell or every segment in the model is not a service
+//!   anybody wants. For those, FLUXALL falls back on the expressions that
+//!   name their object outright, which is the only place the information
+//!   exists. Whatever is left over is reported rather than dropped quietly.
+void handleFLUXALL(SummaryConfig::keyword_list&    list,
+                   const KeywordLocation&          fluxall_location,
+                   const std::vector<int>&         analyticAquiferIDs,
+                   const std::vector<int>&         numericAquiferIDs,
+                   const std::vector<std::string>& node_names,
+                   const Schedule&                 schedule,
+                   const FieldPropsManager&        field_props,
+                   const CellIndexMapper&          gridDims,
+                   SummaryConfigContext&           context,
+                   const ParseContext&             parseContext,
+                   ErrorGuard&                     errors)
 {
     using Cat = SummaryConfigNode::Category;
+
+    const auto named = FLUXALL_namedVectors(schedule);
 
     auto unexpanded = std::vector<std::string>{};
 
@@ -2291,12 +2476,25 @@ void handleFLUXALL(SummaryConfig::keyword_list& list,
             keywordMISC(list, keyword, location);
             break;
 
-        default:
+        default: {
             // Block, connection, completion, segment and node vectors name an
-            // object that cannot be enumerated from the keyword alone, and
-            // covering every cell or every segment in the model is not a
-            // service anybody wants. Say so rather than quietly dropping them.
-            unexpanded.push_back(keyword);
+            // object that the keyword alone does not identify. Take those the
+            // deck's expressions spelled out in full, and say so if that left
+            // the keyword with nothing.
+            auto placed = false;
+
+            for (auto vec = named.lower_bound({keyword, {}});
+                 (vec != named.end()) && (vec->keyword == keyword); ++vec)
+            {
+                placed = fluxallNamedObject(list, *vec, location,
+                                            node_names, schedule, gridDims)
+                    || placed;
+            }
+
+            if (! placed) {
+                unexpanded.push_back(keyword);
+            }
+        }
             break;
         }
     }
@@ -2307,10 +2505,10 @@ void handleFLUXALL(SummaryConfig::keyword_list& list,
 
     OpmLog::warning(OpmInputError::format
                     (fmt::format("FLUXALL cannot expand {} keyword(s) in "
-                                 "{{file}} line {{line}}, because they name an "
-                                 "object that only the request itself can "
-                                 "identify:\n  {}\n"
-                                 "Request these explicitly if a reduced run "
+                                 "{{file}} line {{line}}, because nothing says "
+                                 "which object they apply to:\n  {}\n"
+                                 "Name the object in the expression, or request "
+                                 "these vectors explicitly, if a reduced run "
                                  "needs them.",
                                  unexpanded.size(),
                                  fmt::join(unexpanded, ", ")),
@@ -2654,8 +2852,8 @@ SummaryConfig::SummaryConfig(const Deck&              deck,
         if (section.hasKeyword("FLUXALL")) {
             handleFLUXALL(this->m_keywords,
                           section.getKeyword("FLUXALL").location(),
-                          analyticAquifers, numericAquifers,
-                          schedule, field_props, context,
+                          analyticAquifers, numericAquifers, node_names,
+                          schedule, field_props, gridDims, context,
                           parseContext, errors);
         }
 

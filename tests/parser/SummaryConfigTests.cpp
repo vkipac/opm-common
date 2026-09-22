@@ -1955,6 +1955,169 @@ END
     BOOST_CHECK_MESSAGE(!smry.hasSummaryKey("GPR:G1"), R"(SummaryConfig must NOT have "GPR:G1" key)");
 }
 
+BOOST_AUTO_TEST_CASE(Summary_FLUXALL_NamedObjects) {
+    // FLUXALL reads its list off the deck's own expressions. Most of what it
+    // finds is a bare keyword, which it expands over every object the keyword
+    // can apply to, but block, connection, segment and node quantities have
+    // no such expansion: there is no reading of BPR that covers every cell in
+    // the model and is of any use to anybody.
+    //
+    // What there is, is the expression itself. This ACTIONX names a cell, a
+    // connection, a segment and a node outright, and those four namings are
+    // the only record anywhere of which vectors the run will want.
+    const auto deck = ::Opm::Parser{}.parseString(R"(RUNSPEC
+START
+  21 SEP 2020 12:34:56 /
+
+DIMENS
+  10 10 3 /
+
+NETWORK
+  3 2 /
+
+WELLDIMS
+  2 10 2 2 /
+
+WSEGDIMS
+  1 10 10 /
+
+ACTDIMS
+  4 40 20 20 /
+
+GRID
+
+DXV
+  10*100.0
+/
+
+DYV
+  10*100.0
+/
+
+DZV
+  5 3 2
+/
+
+DEPTHZ
+  121*2000.0
+/
+
+PORO
+  300*0.15
+/
+
+PERMX
+  300*100.0
+/
+
+COPY
+  PERMX PERMY /
+  PERMX PERMZ /
+/
+
+SUMMARY
+
+FLUXALL
+
+SCHEDULE
+
+GRUPTREE
+  'B1' 'PLAT-A' /
+/
+
+WELSPECS
+  'PROD01' 'B1' 1 1 1* 'OIL' /
+/
+
+COMPDAT
+  'PROD01' 1 1 1 3 'OPEN' 1* 1* 0.5 /
+/
+
+WELSEGS
+  'PROD01' 2000 2000 1* ABS /
+  2 2 1 1 2100 2000 0.2 1.0E-4 /
+  3 3 1 2 2200 2000 0.2 1.0E-4 /
+/
+
+COMPSEGS
+  'PROD01' /
+  1 1 1 1 0 100 /
+  1 1 2 1 100 200 /
+  1 1 3 1 200 300 /
+/
+
+BRANPROP
+--  Downtree  Uptree   #VFP    ALQ
+    B1        PLAT-A   5       1* /
+/
+
+NODEPROP
+--  Node_name  Press  autoChoke?  addGasLift?  Group_name
+     PLAT-A    21.0   NO          NO           1*  /
+     B1        1*     NO          NO           1*  /
+/
+
+ACTIONX
+  ACT1 10 1 /
+  BPR 5 5 2 > 100 AND /
+  COPR 'PROD01' 1 1 2 < -1.0 AND /
+  SPR 'PROD01' 3 > 1.0 AND /
+  GPR 'B1' > 1.0 /
+/
+
+WELOPEN
+  'PROD01' 'SHUT' /
+/
+
+ENDACTIO
+
+TSTEP
+  10 /
+END
+)");
+
+    ErrorGuard errors;
+    const auto parseContext = ParseContext{};
+    const auto state = EclipseState (deck);
+    const auto schedule = Schedule (deck, state, parseContext, errors, std::make_shared<const Python>());
+    const auto smry = SummaryConfig(deck, schedule, state.fieldProps(), state.aquifer(), parseContext, errors);
+
+    // Cell (5,5,2) of a 10x10x3 grid, counted from one.
+    BOOST_CHECK_MESSAGE(smry.hasSummaryKey("BPR:145"),
+                        R"(FLUXALL must configure "BPR" for the cell the condition names)");
+
+    // Cell (1,1,2), which PROD01 perforates.
+    BOOST_CHECK_MESSAGE(smry.hasSummaryKey("COPR:PROD01:101"),
+                        R"(FLUXALL must configure "COPR" for the connection the condition names)");
+
+    BOOST_CHECK_MESSAGE(smry.hasSummaryKey("SPR:PROD01:3"),
+                        R"(FLUXALL must configure "SPR" for the segment the condition names)");
+
+    BOOST_CHECK_MESSAGE(smry.hasSummaryKey("GPR:B1"),
+                        R"(FLUXALL must configure "GPR" for the node the condition names)");
+
+    // And no more than that. Nothing asked for the other cells, the other
+    // connections, the other segments, or the platform node, and answering a
+    // question nobody put would mean answering it for every cell in the grid.
+    BOOST_CHECK_MESSAGE(!smry.hasSummaryKey("BPR:1"),
+                        R"(FLUXALL must not configure "BPR" for a cell nothing names)");
+
+    BOOST_CHECK_MESSAGE(!smry.hasSummaryKey("COPR:PROD01:1"),
+                        R"(FLUXALL must not configure "COPR" for a connection nothing names)");
+
+    BOOST_CHECK_MESSAGE(!smry.hasSummaryKey("SPR:PROD01:1"),
+                        R"(FLUXALL must not configure "SPR" for a segment nothing names)");
+
+    BOOST_CHECK_MESSAGE(!smry.hasSummaryKey("GPR:PLAT-A"),
+                        R"(FLUXALL must not configure "GPR" for a node nothing names)");
+
+    // The well level keywords, meanwhile, do expand, and FLUXALL asks for the
+    // rates and cumulatives a reduced run needs whether the deck mentions
+    // them or not.
+    BOOST_CHECK_MESSAGE(smry.hasSummaryKey("WOPR:PROD01"),
+                        R"(FLUXALL must configure "WOPR" for every well)");
+}
+
 BOOST_AUTO_TEST_CASE(ProcessingInstructions) {
     const std::string deck_string = R"(
 RPTONLY
