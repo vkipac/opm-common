@@ -2228,6 +2228,156 @@ END
                         R"(FLUXALL must report the summary vector at the foot of the chain)");
 }
 
+BOOST_AUTO_TEST_CASE(Summary_FLUXALL_UserDefinedQuantities_NamedObjects) {
+    // Well and group level UDQs expand over the objects they apply to, the
+    // same as any other keyword. Block, connection and segment level ones
+    // cannot: there is no reading of a block UDQ that covers every cell in
+    // the model.
+    //
+    // What there is, is the statement that brought the quantity into
+    // existence. A UDQ ASSIGN reads no summary vector, but its selector says
+    // which objects the quantity exists for, and for these three categories
+    // nothing else in the deck records that. The ACTIONX below refers to all
+    // three by bare name, so the selectors are the only way to know which
+    // vectors it will want.
+    const auto deck = ::Opm::Parser{}.parseString(R"(RUNSPEC
+START
+  21 SEP 2020 12:34:56 /
+
+DIMENS
+  10 10 3 /
+
+WELLDIMS
+  2 10 2 2 /
+
+WSEGDIMS
+  1 10 10 /
+
+UDQDIMS
+  10 2 0 10 10 10 0 10 /
+
+ACTDIMS
+  4 40 20 20 /
+
+GRID
+
+DXV
+  10*100.0
+/
+
+DYV
+  10*100.0
+/
+
+DZV
+  5 3 2
+/
+
+DEPTHZ
+  121*2000.0
+/
+
+PORO
+  300*0.15
+/
+
+PERMX
+  300*100.0
+/
+
+COPY
+  PERMX PERMY /
+  PERMX PERMZ /
+/
+
+SUMMARY
+
+FLUXALL
+
+SCHEDULE
+
+WELSPECS
+  'PROD01' 'G1' 1 1 1* 'OIL' /
+/
+
+COMPDAT
+  'PROD01' 1 1 1 3 'OPEN' 1* 1* 0.5 /
+/
+
+WELSEGS
+  'PROD01' 2000 2000 1* ABS /
+  2 2 1 1 2100 2000 0.2 1.0E-4 /
+  3 3 1 2 2200 2000 0.2 1.0E-4 /
+/
+
+COMPSEGS
+  'PROD01' /
+  1 1 1 1 0 100 /
+  1 1 2 1 100 200 /
+  1 1 3 1 200 300 /
+/
+
+UDQ
+  ASSIGN BUFOO 5 5 2 1.0 /
+  UNITS  BUFOO BARSA /
+  ASSIGN CUFOO 'PROD01' 1 1 2 1.0 /
+  UNITS  CUFOO BARSA /
+  ASSIGN SUFOO 'PROD01' 3 1.0 /
+  UNITS  SUFOO BARSA /
+  DEFINE FUBAR SUFOO 'PROD01' 2 /
+  UNITS  FUBAR BARSA /
+/
+
+ACTIONX
+  ACT1 10 1 /
+  BUFOO > 0.0 AND /
+  CUFOO > 0.0 AND /
+  SUFOO > 0.0 AND /
+  FUBAR > 0.0 /
+/
+
+WELOPEN
+  'PROD01' 'SHUT' /
+/
+
+ENDACTIO
+
+TSTEP
+  10 /
+END
+)");
+
+    ErrorGuard errors;
+    const auto parseContext = ParseContext{};
+    const auto state = EclipseState (deck);
+    const auto schedule = Schedule (deck, state, parseContext, errors, std::make_shared<const Python>());
+    const auto smry = SummaryConfig(deck, schedule, state.fieldProps(), state.aquifer(), parseContext, errors);
+
+    // Cell (5,5,2) of a 10x10x3 grid, counted from one.
+    BOOST_CHECK_MESSAGE(smry.hasSummaryKey("BUFOO:145"),
+                        R"(FLUXALL must report a block UDQ for the cell it is assigned to)");
+
+    // Cell (1,1,2), which PROD01 perforates.
+    BOOST_CHECK_MESSAGE(smry.hasSummaryKey("CUFOO:PROD01:101"),
+                        R"(FLUXALL must report a connection UDQ for the connection it is assigned to)");
+
+    BOOST_CHECK_MESSAGE(smry.hasSummaryKey("SUFOO:PROD01:3"),
+                        R"(FLUXALL must report a segment UDQ for the segment it is assigned to)");
+
+    // The other way in. FUBAR is defined in terms of segment 2 of PROD01,
+    // which no assignment covers, so this naming is the only record of it.
+    BOOST_CHECK_MESSAGE(smry.hasSummaryKey("SUFOO:PROD01:2"),
+                        R"(FLUXALL must report a segment UDQ another UDQ is defined in terms of)");
+
+    // And nowhere else. The assignment says which objects the quantity exists
+    // for, so it also says which objects it does not.
+    BOOST_CHECK_MESSAGE(!smry.hasSummaryKey("BUFOO:1"),
+                        R"(FLUXALL must not report a block UDQ for a cell it is not assigned to)");
+
+    BOOST_CHECK_MESSAGE(!smry.hasSummaryKey("SUFOO:PROD01:1"),
+                        R"(FLUXALL must not report a segment UDQ nothing names)");
+}
+
 BOOST_AUTO_TEST_CASE(ProcessingInstructions) {
     const std::string deck_string = R"(
 RPTONLY

@@ -335,19 +335,23 @@ void UDQASTNode::requisiteSummaryVectors(RequisiteSummaryVectors& vectors) const
     // A selector holding a template -- 'OP*' -- picks out whichever objects
     // match when the UDQ is evaluated, and an empty selector means every
     // object the UDQ applies to. Neither names a vector.
+    //
+    // A reference to another user defined quantity does, though, and is kept:
+    // a block, connection or segment level UDQ has to be named against its
+    // object to mean anything, and nothing else in the deck records which
+    // object that is. This is where required_summary() and this function part
+    // company, the former having no use for a name it does not intend to read.
     if ((this->type == UDQTokenType::ecl_expr) &&
         std::holds_alternative<std::string>(this->value) &&
         ! this->selector.empty())
     {
-        const auto& keyword = std::get<std::string>(this->value);
-
         const auto templated = std::any_of(this->selector.begin(),
                                            this->selector.end(),
                                            [](const std::string& item)
                                            { return item.find('*') != std::string::npos; });
 
-        if (!is_udq(keyword) && !templated) {
-            vectors.insert({ keyword, this->selector });
+        if (! templated) {
+            vectors.insert({ std::get<std::string>(this->value), this->selector });
         }
     }
 

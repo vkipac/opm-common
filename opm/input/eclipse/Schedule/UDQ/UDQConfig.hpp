@@ -535,11 +535,13 @@ namespace Opm {
         /// Export the summary vectors the definitions in this configuration
         /// name in full.
         ///
-        /// Assignments contribute nothing: a UDQ ASSIGN gives a numeric value
-        /// to a selection of objects and never refers to a summary vector.
+        /// Assignments are included as well.  One reads no summary vector,
+        /// but it does say which objects its quantity exists for, and for a
+        /// block, connection or segment level UDQ nothing else in the deck
+        /// records that.
         ///
         /// \param[in,out] vectors Summary vectors named in full.  On exit
-        /// also contains any such vector named by these definitions.
+        /// also contains any such vector named here.
         void requisiteSummaryVectors(RequisiteSummaryVectors& vectors) const;
 
         /// Export the user defined quantities the definitions in this
