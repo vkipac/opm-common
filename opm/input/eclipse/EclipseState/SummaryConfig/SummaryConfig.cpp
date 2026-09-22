@@ -29,6 +29,8 @@
 #include <opm/input/eclipse/EclipseState/Grid/GridDims.hpp>
 #include <opm/input/eclipse/EclipseState/Runspec.hpp>
 
+#include <opm/input/eclipse/Schedule/Action/ActionX.hpp>
+#include <opm/input/eclipse/Schedule/Action/Actions.hpp>
 #include <opm/input/eclipse/Schedule/Group/Group.hpp>
 #include <opm/input/eclipse/Schedule/Network/ExtNetwork.hpp>
 #include <opm/input/eclipse/Schedule/MSW/WellSegments.hpp>
@@ -399,6 +401,59 @@ namespace {
         return {
             "DAY", "MONTH", "YEAR",
         };
+    }
+
+    //! \brief The summary vectors a reduced, FLUX boundary driven run needs.
+    //!
+    //! \details A sector run cut out of a full field model still evaluates the
+    //!   deck's UDQ expressions and ACTIONX conditions, but it no longer
+    //!   computes the quantities they refer to: the wells and regions those
+    //!   expressions name may lie outside the sector entirely. The values have
+    //!   to be carried over from the parent run instead, which means the parent
+    //!   has to have reported them. FLUXALL is how a deck says "report whatever
+    //!   my own expressions will ask for", so that the question of which
+    //!   vectors those are does not have to be answered by hand.
+    //!
+    //!   The list is therefore the deck's own requirements rather than a fixed
+    //!   set, plus the well rates and cumulatives a reduced run needs to
+    //!   account for the wells it does not contain.
+    //!
+    //!   Note that these are bare keywords. Expanding them over the objects
+    //!   they apply to is left to the caller, which has the region sets and
+    //!   the aquifer IDs that this function does not.
+    std::vector<std::string> FLUXALL_keywords(const Schedule& schedule)
+    {
+        auto keywords = std::unordered_set<std::string> {
+            // Surface rates and cumulatives, produced and injected.
+            "WOPR", "WOPT", "WOIR", "WOIT",
+            "WWPR", "WWPT", "WWIR", "WWIT",
+            "WGPR", "WGPT", "WGIR", "WGIT",
+
+            // The same at reservoir conditions.
+            "WVPR", "WVPT", "WVIR", "WVIT",
+        };
+
+        for (const auto& udq : schedule.unique<UDQConfig>()) {
+            udq.second.required_summary(keywords);
+        }
+
+        for (const auto& action : schedule.back().actions.get()) {
+            action.required_summary(keywords);
+        }
+
+        auto sorted = std::vector<std::string> {
+            keywords.begin(), keywords.end()
+        };
+
+        // An expression that refers to nothing summary-like contributes an
+        // empty requirement; drop those rather than asking for a vector with
+        // no name.
+        sorted.erase(std::remove(sorted.begin(), sorted.end(), std::string{}),
+                     sorted.end());
+
+        std::ranges::sort(sorted);
+
+        return sorted;
     }
 
     auto meta_keywords()
@@ -1317,8 +1372,12 @@ void keywordB(SummaryConfig::keyword_list& list,
     }
 }
 
+// The keyword is taken apart by name and reported by location, so this serves
+// a keyword that came from the deck as well as one that a meta keyword such as
+// FLUXALL asked for on the deck's behalf.
 std::optional<std::string>
-establishRegionContext(const DeckKeyword&       keyword,
+establishRegionContext(const std::string&       keyword_name,
+                       const KeywordLocation&   location,
                        const FieldPropsManager& field_props,
                        const ParseContext&      parseContext,
                        ErrorGuard&              errors,
@@ -1326,8 +1385,8 @@ establishRegionContext(const DeckKeyword&       keyword,
 {
     auto region_name = std::string { "FIPNUM" };
 
-    if (keyword.name().size() > 5) {
-        region_name = "FIP" + keyword.name().substr(5, 3);
+    if (keyword_name.size() > 5) {
+        region_name = "FIP" + keyword_name.substr(5, 3);
 
         if (! field_props.has_int(region_name)) {
             const auto msg_fmt =
@@ -1337,7 +1396,7 @@ establishRegionContext(const DeckKeyword&       keyword,
                             "REGIONS section - {{keyword}} ignored", region_name);
 
             parseContext.handleError(ParseContext::SUMMARY_INVALID_FIPNUM,
-                                     msg_fmt, keyword.location(), errors);
+                                     msg_fmt, location, errors);
             return std::nullopt;
         }
     }
@@ -1379,7 +1438,8 @@ void keywordR2R(const DeckKeyword&           keyword,
         };
     }
 
-    const auto region_name = establishRegionContext(keyword, field_props,
+    const auto region_name = establishRegionContext(keyword.name(), keyword.location(),
+                                                    field_props,
                                                     parseContext, errors,
                                                     context);
 
@@ -1456,7 +1516,7 @@ void keywordR(SummaryConfig::keyword_list& list,
     }
 
     const auto region_name =
-        establishRegionContext(deck_keyword, field_props,
+        establishRegionContext(keyword, deck_keyword.location(), field_props,
                                parseContext, errors,
                                context);
 
@@ -1509,6 +1569,47 @@ void keywordR(SummaryConfig::keyword_list& list,
     .isUserDefined(is_udq(keyword));
 
     std::ranges::transform(regions, std::back_inserter(list),
+                           [&param](const auto& region)
+                           { return param.number(region); });
+}
+
+//! \brief Configure a region level vector for every region that exists.
+//!
+//! \details This is the bare-keyword form, for a request that did not come
+//!   with a record of region IDs -- a meta keyword such as FLUXALL. It covers
+//!   the whole of the region set, which is the only reading available when
+//!   nobody named a region.
+void keywordR(SummaryConfig::keyword_list& list,
+              SummaryConfigContext&        context,
+              const std::string&           keyword,
+              const KeywordLocation&       location,
+              const FieldPropsManager&     field_props,
+              const ParseContext&          parseContext,
+              ErrorGuard&                  errors)
+{
+    if (is_region_to_region(keyword)) {
+        // A region-to-region vector names a pair of regions, and the full
+        // cross product of the region set is not something anybody asked for.
+        return;
+    }
+
+    const auto region_name =
+        establishRegionContext(keyword, location, field_props,
+                               parseContext, errors, context);
+
+    if (! region_name.has_value()) {
+        return;
+    }
+
+    auto param = SummaryConfigNode {
+        keyword, SummaryConfigNode::Category::Region, location
+    }
+    .parameterType(parseKeywordType(EclIO::SummaryNode::normalise_region_keyword(keyword)))
+    .fip_region   (region_name.value())
+    .isUserDefined(is_udq(keyword));
+
+    std::ranges::transform(context.activeRegions(*region_name),
+                           std::back_inserter(list),
                            [&param](const auto& region)
                            { return param.number(region); });
 }
@@ -2129,6 +2230,93 @@ void handleKW(SummaryConfig::keyword_list& list,
     }
 }
 
+//! \brief Expand the FLUXALL meta keyword.
+//!
+//! \details Unlike ALL and its relatives, FLUXALL does not stand for a fixed
+//!   list: what it asks for is read off the deck's own UDQ and ACTIONX
+//!   expressions. The requirements come back as bare keywords, so each one is
+//!   expanded over every object it can apply to. That is deliberately
+//!   generous -- an expression that mentions WBHP will be evaluated against
+//!   whichever well the ACTIONX matches, and which well that is cannot be
+//!   known until the run gets there.
+void handleFLUXALL(SummaryConfig::keyword_list& list,
+                   const KeywordLocation&       fluxall_location,
+                   const std::vector<int>&      analyticAquiferIDs,
+                   const std::vector<int>&      numericAquiferIDs,
+                   const Schedule&              schedule,
+                   const FieldPropsManager&     field_props,
+                   SummaryConfigContext&        context,
+                   const ParseContext&          parseContext,
+                   ErrorGuard&                  errors)
+{
+    using Cat = SummaryConfigNode::Category;
+
+    auto unexpanded = std::vector<std::string>{};
+
+    for (const auto& keyword : FLUXALL_keywords(schedule)) {
+        if (is_udq(keyword)) {
+            // An ACTIONX condition may compare against a user defined
+            // quantity. The run computes that itself, from the vectors the
+            // UDQ's own definition asks for, which are in this list too.
+            continue;
+        }
+
+        auto location = fluxall_location;
+        location.keyword = fmt::format("FLUXALL/{}", keyword);
+
+        switch (parseKeywordCategory(keyword)) {
+        case Cat::Well:
+            keywordW(list, keyword, location, schedule);
+            break;
+
+        case Cat::Group:
+            keywordG(list, keyword, location, schedule);
+            break;
+
+        case Cat::Field:
+            keywordF(list, keyword, location);
+            break;
+
+        case Cat::Region:
+            keywordR(list, context, keyword, location,
+                     field_props, parseContext, errors);
+            break;
+
+        case Cat::Aquifer:
+            keywordAquifer(list, keyword, analyticAquiferIDs,
+                           numericAquiferIDs, location);
+            break;
+
+        case Cat::Miscellaneous:
+            keywordMISC(list, keyword, location);
+            break;
+
+        default:
+            // Block, connection, completion, segment and node vectors name an
+            // object that cannot be enumerated from the keyword alone, and
+            // covering every cell or every segment in the model is not a
+            // service anybody wants. Say so rather than quietly dropping them.
+            unexpanded.push_back(keyword);
+            break;
+        }
+    }
+
+    if (unexpanded.empty()) {
+        return;
+    }
+
+    OpmLog::warning(OpmInputError::format
+                    (fmt::format("FLUXALL cannot expand {} keyword(s) in "
+                                 "{{file}} line {{line}}, because they name an "
+                                 "object that only the request itself can "
+                                 "identify:\n  {}\n"
+                                 "Request these explicitly if a reduced run "
+                                 "needs them.",
+                                 unexpanded.size(),
+                                 fmt::join(unexpanded, ", ")),
+                     fluxall_location));
+}
+
 void uniq(SummaryConfig::keyword_list& vec)
 {
     if (vec.empty()) {
@@ -2422,6 +2610,12 @@ SummaryConfig::SummaryConfig(const Deck&              deck,
             if (is_processing_instruction(kw.name())) {
                 handleProcessingInstruction(kw.name());
             }
+            else if (kw.name() == "FLUXALL") {
+                // A meta keyword, expanded below once every explicit request
+                // has been seen. Left to itself it would read as a field level
+                // vector by its leading F.
+                continue;
+            }
             else {
                 handleKW(node_names, node_names_with_wells,
                          analyticAquifers, numericAquifers,
@@ -2455,6 +2649,14 @@ SummaryConfig::SummaryConfig(const Deck&              deck,
                          analyticAquifers, numericAquifers,
                          location, schedule, parseContext, errors);
             }
+        }
+
+        if (section.hasKeyword("FLUXALL")) {
+            handleFLUXALL(this->m_keywords,
+                          section.getKeyword("FLUXALL").location(),
+                          analyticAquifers, numericAquifers,
+                          schedule, field_props, context,
+                          parseContext, errors);
         }
 
         uniq(this->m_keywords);
