@@ -489,10 +489,10 @@ namespace Opm {
         /// Add a field-level vector that the input deck did not ask for.
         ///
         /// \details Intended for vectors a run produces by virtue of how it
-        /// is set up rather than by request, such as FPR2 in a USEFLUX run.
+        /// is set up rather than by request, such as FPRFLUX in a USEFLUX run.
         /// Does nothing if the vector is already present.
         ///
-        /// \param[in] keyword Field-level vector name, e.g. "FPR2".
+        /// \param[in] keyword Field-level vector name, e.g. "FPRFLUX".
         /// \param[in] loc Location to attribute the vector to.
         ///
         /// \return \code *this \endcode
