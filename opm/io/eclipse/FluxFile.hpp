@@ -144,6 +144,13 @@ public:
         /// NaN cannot make the correction and should leave the pressure alone.
         double exteriorDepth = std::numeric_limits<double>::quiet_NaN();
 
+        /// Equilibration region of the cell on the far side of the face.
+        ///
+        /// Paired with the interior cell's own region it selects an entry in
+        /// Data::thresholdPressure.  Negative when the producer did not record
+        /// it.
+        int exteriorEquilRegion = -1;
+
         bool operator==(const BoundaryFace& other) const;
     };
 
@@ -258,6 +265,22 @@ public:
         std::vector<std::string> summaryKeys;
         std::vector<ReportStep> reportSteps;
         std::vector<SummarySample> summarySamples;
+
+        /// The producer's threshold pressures, as a flattened square matrix
+        /// over its equilibration regions: entry <tt>r1*n + r2</tt> is the
+        /// threshold for flow from region \c r1 to region \c r2, and \c n is
+        /// the square root of the length.
+        ///
+        /// A THPRES entry given as defaulted is not a number in the deck: it
+        /// is the largest initial potential difference found anywhere along
+        /// that region boundary, so it can only be arrived at by equilibrating
+        /// the whole field.  A sector holds part of each region boundary and
+        /// would arrive at a smaller number, which is why it has to be handed
+        /// the producer's rather than working out its own.
+        ///
+        /// Empty when the producer had no threshold pressures, or did not
+        /// record them.
+        std::vector<double> thresholdPressure;
 
         bool operator==(const Data& other) const;
     };

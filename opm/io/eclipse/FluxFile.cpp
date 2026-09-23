@@ -324,6 +324,11 @@ void FluxFile::Writer::writeStaticSection()
     output.write("FLUXTRAN", flattenBoundary(data.boundaryFaces, &BoundaryFace::transmissibility));
     output.write("FLXPVTN", flattenBoundary(data.boundaryFaces, &BoundaryFace::exteriorPvtRegion));
     output.write("FLXEXDP", flattenBoundary(data.boundaryFaces, &BoundaryFace::exteriorDepth));
+    output.write("FLXEQLN", flattenBoundary(data.boundaryFaces, &BoundaryFace::exteriorEquilRegion));
+
+    if (!data.thresholdPressure.empty()) {
+        output.write("FLXTHPR", data.thresholdPressure);
+    }
     output.write("FLXMINT", std::vector<double>{data.header.boundaryMinSampleInterval});
 
     if (!data.summaryKeys.empty()) {
@@ -492,14 +497,18 @@ FluxFile::Data FluxFile::read(const std::string& filename, bool preload)
     data.boundaryFaces.reserve(fluxCell.size());
     const auto& fluxPvtn = optionalArray<int>(file, "FLXPVTN");
     const auto& fluxExDp = optionalArray<double>(file, "FLXEXDP");
+    const auto& fluxEqln = optionalArray<int>(file, "FLXEQLN");
     for (std::size_t index = 0; index < fluxCell.size(); ++index) {
         data.boundaryFaces.push_back(BoundaryFace{fluxCell[index], fluxDir[index], fluxNnc[index],
                                                   fluxTran[index],
                                                   (index < fluxPvtn.size()) ? fluxPvtn[index] : 0,
                                                   (index < fluxExDp.size())
                                                   ? fluxExDp[index]
-                                                  : std::numeric_limits<double>::quiet_NaN()});
+                                                  : std::numeric_limits<double>::quiet_NaN(),
+                                                  (index < fluxEqln.size()) ? fluxEqln[index] : -1});
     }
+
+    data.thresholdPressure = optionalArray<double>(file, "FLXTHPR");
 
     const auto& summaryMinInterval = optionalArray<double>(file, "SMRYMINT");
     const auto& boundaryMinInterval = optionalArray<double>(file, "FLXMINT");

@@ -71,12 +71,22 @@ Opm::EclIO::FluxFile::Data sampleData()
     data.names = {"BASE", "REGION_2", "METRIC"};
     data.localToGlobal = {248, 249, 268, -1};
     data.boundaryFaces = {
-        // The last two members are the exterior cell's PVT region and the
-        // depth of its centre. The second face deliberately leaves the depth
-        // unrecorded, which is how a file written before it was stored reads
-        // back, and has to survive the round trip as such.
-        {0, 0, 247, 1.5, 0, 1606.802},
+        // The last three members are the exterior cell's PVT region, the depth
+        // of its centre and its equilibration region. The second face
+        // deliberately leaves all three unrecorded, which is how a file
+        // written before they were stored reads back, and has to survive the
+        // round trip as such.
+        {0, 0, 247, 1.5, 0, 1606.802, 2},
         {2, 3, 288, 2.5},
+    };
+
+    // A 3x3 table over three equilibration regions. Deliberately asymmetric:
+    // THPRES may be given as irreversible, and reading the pair the wrong way
+    // round then silently picks the other direction's threshold.
+    data.thresholdPressure = {
+        0.0,     53836.49, 0.0,
+        0.0,     0.0,      81483.75,
+        12345.0, 0.0,      0.0,
     };
     data.summaryKeys = {"FOPR", "GGPR"};
 
@@ -197,6 +207,33 @@ BOOST_AUTO_TEST_CASE(ExteriorDepthSurvivesTheRoundTrip)
     // unrecorded rather than as a depth of zero, which a consumer would
     // otherwise treat as a real datum.
     BOOST_CHECK(std::isnan(readBack.boundaryFaces[1].exteriorDepth));
+}
+
+BOOST_AUTO_TEST_CASE(ThresholdPressuresSurviveTheRoundTrip)
+{
+    // A defaulted THPRES entry is the largest initial potential difference
+    // along a whole region boundary, so a sector holding part of that boundary
+    // cannot arrive at the same number and has to be handed the producer's.
+    // The exterior cell's region is what pairs with the interior one to pick
+    // an entry out of the table, and without it the table cannot be used.
+    WorkArea work;
+
+    const auto written = sampleData();
+    writeAll("THPRES.FLUX", false, written);
+    const auto readBack = Opm::EclIO::FluxFile::read("THPRES.FLUX");
+
+    BOOST_CHECK_EQUAL_COLLECTIONS(readBack.thresholdPressure.begin(),
+                                  readBack.thresholdPressure.end(),
+                                  written.thresholdPressure.begin(),
+                                  written.thresholdPressure.end());
+
+    BOOST_REQUIRE_EQUAL(readBack.boundaryFaces.size(), written.boundaryFaces.size());
+    BOOST_CHECK_EQUAL(readBack.boundaryFaces[0].exteriorEquilRegion, 2);
+
+    // A face whose region the producer never recorded reads back as unrecorded
+    // rather than as region zero, which is a real region and would pick a real
+    // entry out of the table.
+    BOOST_CHECK_EQUAL(readBack.boundaryFaces[1].exteriorEquilRegion, -1);
 }
 
 BOOST_AUTO_TEST_CASE(OnlyPresentPhasesAreWritten)
