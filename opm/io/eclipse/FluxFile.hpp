@@ -130,6 +130,20 @@ public:
         /// preceding members keeps working.
         int exteriorPvtRegion = 0;
 
+        /// Depth of the centre of the cell on the far side of the face.
+        ///
+        /// The pressures in a report step are that cell's, taken at its
+        /// centre, while a boundary condition is imposed at the face. The two
+        /// are not the same place, and in a dipping layer they are not even
+        /// close: the consumer needs this depth to carry the pressure from the
+        /// one to the other, or it imposes the exterior cell's pressure at a
+        /// depth where the exterior cell does not have it.
+        ///
+        /// NaN when the producer did not record it, which is how a file
+        /// written before this was stored reads back. A consumer that finds
+        /// NaN cannot make the correction and should leave the pressure alone.
+        double exteriorDepth = std::numeric_limits<double>::quiet_NaN();
+
         bool operator==(const BoundaryFace& other) const;
     };
 

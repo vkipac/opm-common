@@ -27,6 +27,7 @@
 
 #include <filesystem>
 #include <stdexcept>
+#include <cmath>
 #include <string>
 #include <vector>
 
@@ -70,7 +71,11 @@ Opm::EclIO::FluxFile::Data sampleData()
     data.names = {"BASE", "REGION_2", "METRIC"};
     data.localToGlobal = {248, 249, 268, -1};
     data.boundaryFaces = {
-        {0, 0, 247, 1.5},
+        // The last two members are the exterior cell's PVT region and the
+        // depth of its centre. The second face deliberately leaves the depth
+        // unrecorded, which is how a file written before it was stored reads
+        // back, and has to survive the round trip as such.
+        {0, 0, 247, 1.5, 0, 1606.802},
         {2, 3, 288, 2.5},
     };
     data.summaryKeys = {"FOPR", "GGPR"};
@@ -169,6 +174,29 @@ BOOST_AUTO_TEST_CASE(FormattedRoundTrip)
 {
     WorkArea work;
     expectRoundTrip("SAMPLE.FFLUX", true);
+}
+
+BOOST_AUTO_TEST_CASE(ExteriorDepthSurvivesTheRoundTrip)
+{
+    // A reduced run imposes the recorded pressures at the boundary face, while
+    // they were measured at the centre of the cell on the far side. It carries
+    // them from the one to the other using this depth, so losing it in the file
+    // means imposing the exterior cell's pressure at a depth where the exterior
+    // cell does not have it -- which in a dipping layer is metres of head.
+    WorkArea work;
+
+    const auto written = sampleData();
+    writeAll("DEPTH.FLUX", false, written);
+    const auto readBack = Opm::EclIO::FluxFile::read("DEPTH.FLUX");
+
+    BOOST_REQUIRE_EQUAL(readBack.boundaryFaces.size(), written.boundaryFaces.size());
+
+    BOOST_CHECK_CLOSE(readBack.boundaryFaces[0].exteriorDepth, 1606.802, 1.0e-10);
+
+    // And a face whose depth the producer never recorded still reads back as
+    // unrecorded rather than as a depth of zero, which a consumer would
+    // otherwise treat as a real datum.
+    BOOST_CHECK(std::isnan(readBack.boundaryFaces[1].exteriorDepth));
 }
 
 BOOST_AUTO_TEST_CASE(OnlyPresentPhasesAreWritten)

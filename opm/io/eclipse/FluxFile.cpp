@@ -261,7 +261,23 @@ namespace Opm::EclIO {
 
 bool FluxFile::Header::operator==(const Header& other) const = default;
 
-bool FluxFile::BoundaryFace::operator==(const BoundaryFace& other) const = default;
+bool FluxFile::BoundaryFace::operator==(const BoundaryFace& other) const
+{
+    // An unrecorded exterior depth is held as NaN, which is not equal to
+    // itself, so two faces that both lack one would otherwise never compare
+    // equal -- and a file that records no depths would not survive a round
+    // trip.
+    const auto sameDepth = (std::isnan(this->exteriorDepth) &&
+                            std::isnan(other.exteriorDepth))
+        || (this->exteriorDepth == other.exteriorDepth);
+
+    return (this->interiorLocalCell == other.interiorLocalCell)
+        && (this->direction == other.direction)
+        && (this->exteriorGlobalCell == other.exteriorGlobalCell)
+        && (this->transmissibility == other.transmissibility)
+        && (this->exteriorPvtRegion == other.exteriorPvtRegion)
+        && sameDepth;
+}
 
 bool FluxFile::ReportStep::operator==(const ReportStep& other) const = default;
 
@@ -307,6 +323,7 @@ void FluxFile::Writer::writeStaticSection()
     output.write("FACEGLNB", flattenBoundary(data.boundaryFaces, &BoundaryFace::exteriorGlobalCell));
     output.write("FLUXTRAN", flattenBoundary(data.boundaryFaces, &BoundaryFace::transmissibility));
     output.write("FLXPVTN", flattenBoundary(data.boundaryFaces, &BoundaryFace::exteriorPvtRegion));
+    output.write("FLXEXDP", flattenBoundary(data.boundaryFaces, &BoundaryFace::exteriorDepth));
     output.write("FLXMINT", std::vector<double>{data.header.boundaryMinSampleInterval});
 
     if (!data.summaryKeys.empty()) {
@@ -474,10 +491,14 @@ FluxFile::Data FluxFile::read(const std::string& filename, bool preload)
 
     data.boundaryFaces.reserve(fluxCell.size());
     const auto& fluxPvtn = optionalArray<int>(file, "FLXPVTN");
+    const auto& fluxExDp = optionalArray<double>(file, "FLXEXDP");
     for (std::size_t index = 0; index < fluxCell.size(); ++index) {
         data.boundaryFaces.push_back(BoundaryFace{fluxCell[index], fluxDir[index], fluxNnc[index],
                                                   fluxTran[index],
-                                                  (index < fluxPvtn.size()) ? fluxPvtn[index] : 0});
+                                                  (index < fluxPvtn.size()) ? fluxPvtn[index] : 0,
+                                                  (index < fluxExDp.size())
+                                                  ? fluxExDp[index]
+                                                  : std::numeric_limits<double>::quiet_NaN()});
     }
 
     const auto& summaryMinInterval = optionalArray<double>(file, "SMRYMINT");
