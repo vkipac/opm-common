@@ -27,6 +27,7 @@
 
 #include <fmt/format.h>
 
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <limits>
@@ -255,6 +256,67 @@ Opm::EclIO::EclFile openFluxFile(const std::string& filename, bool preload)
     return {filename, Formatted{!isBinary}, Tolerant{true}, preload};
 }
 
+void checkParentWells(const Opm::EclIO::FluxFile::ParentWells& wells, const std::string& context)
+{
+    if (wells.empty()) {
+        return;
+    }
+
+    const auto numSteps = wells.stepStart.size();
+    const auto perWell = numSteps * wells.wells.size();
+    const auto perGroup = numSteps * wells.groups.size();
+
+    const auto check = [&context](const std::size_t size, const std::size_t expected,
+                                  const char* name)
+    {
+        if (size != expected) {
+            OPM_THROW(std::runtime_error,
+                      fmt::format("{}: {} holds {} values, expected {}",
+                                  context, name, size, expected));
+        }
+    };
+
+    check(wells.wellGroup.size(), perWell, "FLXWGRP");
+    check(wells.wellType.size(), perWell, "FLXWTYPE");
+    check(wells.wellStatus.size(), perWell, "FLXWSTAT");
+    check(wells.wellEfficiency.size(), perWell, "FLXWEFAC");
+    check(wells.wellRefDepth.size(), wells.wells.size(), "FLXWDREF");
+    check(wells.groupParent.size(), perGroup, "FLXGPAR");
+    check(wells.groupEfficiency.size(), perGroup, "FLXGEFAC");
+
+    const auto numGroups = static_cast<int>(wells.groups.size());
+    const auto inRange = [numGroups](const int index) { return (index >= 0) && (index <= numGroups); };
+    if (!std::all_of(wells.wellGroup.begin(), wells.wellGroup.end(), inRange)
+        || !std::all_of(wells.groupParent.begin(), wells.groupParent.end(), inRange))
+    {
+        OPM_THROW(std::runtime_error,
+                  fmt::format("{}: a well or group refers to a group that is not listed", context));
+    }
+}
+
+Opm::EclIO::FluxFile::ParentWells
+readParentWellsFrom(Opm::EclIO::EclFile& file, const std::string& filename)
+{
+    Opm::EclIO::FluxFile::ParentWells wells;
+    if (!file.hasKey("FLXWELLS")) {
+        return wells;
+    }
+
+    wells.stepStart = optionalArray<double>(file, "FLXPSTRT");
+    wells.wells = optionalArray<std::string>(file, "FLXWELLS");
+    wells.groups = optionalArray<std::string>(file, "FLXGRUPS");
+    wells.wellGroup = optionalArray<int>(file, "FLXWGRP");
+    wells.wellType = optionalArray<int>(file, "FLXWTYPE");
+    wells.wellStatus = optionalArray<int>(file, "FLXWSTAT");
+    wells.wellEfficiency = optionalArray<double>(file, "FLXWEFAC");
+    wells.wellRefDepth = optionalArray<double>(file, "FLXWDREF");
+    wells.groupParent = optionalArray<int>(file, "FLXGPAR");
+    wells.groupEfficiency = optionalArray<double>(file, "FLXGEFAC");
+
+    checkParentWells(wells, fmt::format("FLUX file '{}'", filename));
+    return wells;
+}
+
 } // namespace
 
 namespace Opm::EclIO {
@@ -330,6 +392,19 @@ void FluxFile::Writer::writeStaticSection()
         output.write("FLXTHPR", data.thresholdPressure);
     }
     output.write("FLXMINT", std::vector<double>{data.header.boundaryMinSampleInterval});
+
+    if (const auto& wells = data.parentWells; !wells.empty()) {
+        output.write("FLXPSTRT", wells.stepStart);
+        output.write("FLXWELLS", wells.wells, 32);
+        output.write("FLXGRUPS", wells.groups, 32);
+        output.write("FLXWGRP", wells.wellGroup);
+        output.write("FLXWTYPE", wells.wellType);
+        output.write("FLXWSTAT", wells.wellStatus);
+        output.write("FLXWEFAC", wells.wellEfficiency);
+        output.write("FLXWDREF", wells.wellRefDepth);
+        output.write("FLXGPAR", wells.groupParent);
+        output.write("FLXGEFAC", wells.groupEfficiency);
+    }
 
     if (!data.summaryKeys.empty()) {
         output.write("SMRYMINT", std::vector<double>{data.header.summaryMinSampleInterval});
@@ -509,6 +584,7 @@ FluxFile::Data FluxFile::read(const std::string& filename, bool preload)
     }
 
     data.thresholdPressure = optionalArray<double>(file, "FLXTHPR");
+    data.parentWells = readParentWellsFrom(file, filename);
 
     const auto& summaryMinInterval = optionalArray<double>(file, "SMRYMINT");
     const auto& boundaryMinInterval = optionalArray<double>(file, "FLXMINT");
@@ -758,6 +834,12 @@ FluxFile::Data FluxFile::read(const std::string& filename, bool preload)
     return data;
 }
 
+FluxFile::ParentWells FluxFile::readParentWells(const std::string& filename)
+{
+    EclFile file = openFluxFile(filename, /*preload=*/false);
+    return readParentWellsFrom(file, filename);
+}
+
 void FluxFile::validateStaticForWrite(const Data& data)
 {
     if (data.header.version != formatVersion()) {
@@ -789,6 +871,8 @@ void FluxFile::validateStaticForWrite(const Data& data)
                   fmt::format("Header numSummaryKeys {} does not match summary key count {}",
                               data.header.numSummaryKeys, data.summaryKeys.size()));
     }
+
+    checkParentWells(data.parentWells, "FluxFile writer");
 }
 
 void FluxFile::validateRecordsForWrite(const Data& data,

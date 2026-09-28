@@ -257,6 +257,47 @@ public:
         bool operator==(const SummarySample& other) const;
     };
 
+    /// The producer's wells and groups over its report steps.
+    ///
+    /// Per-step arrays are step-major: entry <tt>s*n + i</tt> is well (or
+    /// group) \c i at report step \c s. Steps are identified by their start
+    /// time, so a consumer whose schedule has other report steps can still
+    /// find the one that applies.
+    struct ParentWells {
+        /// Start of each of the producer's report steps, as POSIX time.
+        std::vector<double> stepStart;
+
+        std::vector<std::string> wells;
+
+        /// Every group, FIELD included.
+        std::vector<std::string> groups;
+
+        /// One-based index into \c groups of the well's group; 0 before the
+        /// well is defined.
+        std::vector<int> wellGroup;
+
+        /// 1 producer, 2 water injector, 3 gas injector, 4 oil injector.
+        std::vector<int> wellType;
+
+        /// 1 OPEN, 2 STOP, 3 SHUT, 4 AUTO.
+        std::vector<int> wellStatus;
+
+        std::vector<double> wellEfficiency;
+
+        /// Reference depth of each well, in metres, NaN if it has none.
+        std::vector<double> wellRefDepth;
+
+        /// One-based index into \c groups of the group's parent; 0 for FIELD
+        /// and before the group is defined.
+        std::vector<int> groupParent;
+
+        std::vector<double> groupEfficiency;
+
+        bool empty() const { return this->wells.empty(); }
+
+        bool operator==(const ParentWells& other) const = default;
+    };
+
     struct Data {
         Header header;
         std::vector<std::string> names;
@@ -281,6 +322,19 @@ public:
         /// Empty when the producer had no threshold pressures, or did not
         /// record them.
         std::vector<double> thresholdPressure;
+
+        /// The producer's wells and groups, report step by report step.
+        ///
+        /// A sector cut out of the full model usually has only its own wells
+        /// in its SCHEDULE section, and its group tree may lack groups that
+        /// hold nothing but wells outside it. The embedded summary has those
+        /// wells' rates, but not which group they belong to, whether they
+        /// produce or inject, or how their rates are weighted, and without
+        /// that a reduced run cannot count them into its group and field
+        /// totals, its group controls or its UDQs.
+        ///
+        /// Empty when the producer did not record it.
+        ParentWells parentWells;
 
         bool operator==(const Data& other) const;
     };
@@ -367,6 +421,9 @@ public:
     /// killed part way through a write, is read up to the last complete block
     /// rather than rejected.
     static Data read(const std::string& filename, bool preload = false);
+
+    /// Read only the producer's well and group table, without the records.
+    static ParentWells readParentWells(const std::string& filename);
 
 private:
     static void validateStaticForWrite(const Data& data);
