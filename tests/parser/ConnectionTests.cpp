@@ -330,6 +330,59 @@ COMPDAT
     }
 }
 
+BOOST_AUTO_TEST_CASE(loadCOMPDATInactiveCell)
+{
+    const auto deck = Opm::Parser{}.parseString(R"(GRID
+PERMX
+  1000*0.10 /
+COPY
+  'PERMX' 'PERMZ' /
+  'PERMX' 'PERMY' /
+/
+PORO
+  1000*0.3 /
+SCHEDULE
+COMPDAT
+    'WELL'  1  1   1   2 'OPEN' /
+/)");
+
+    // Cell (1,1,2) inactive.
+    Opm::EclipseGrid grid { 10, 10, 10 };
+    auto actnum = std::vector<int>(1000, 1);
+    actnum[100] = 0;
+    grid.resetACTNUM(actnum);
+
+    const Opm::FieldPropsManager field_props {
+        deck, Opm::Phases{true, true, true}, grid, Opm::TableManager{}
+    };
+
+    const auto load = [&](const Opm::InputErrorAction action)
+    {
+        auto ctx = Opm::ParseContext{};
+        ctx.update(Opm::ParseContext::SCHEDULE_COMPDAT_INACTIVE_CELL, action);
+        auto errors = Opm::ErrorGuard{};
+
+        Opm::CompletedCells completed_cells(grid);
+        const auto sg = Opm::ScheduleGrid { grid, field_props, completed_cells };
+
+        Opm::WellConnections connections { Opm::Connection::Order::TRACK, 1, 1 };
+        std::vector<int> requested_open_complnums;
+        std::vector<int> requested_shut_complnums;
+        connections.loadCOMPDAT(deck["COMPDAT"][0].getRecord(0), "WELL", Opm::WDFAC{}, sg,
+                                Opm::KeywordLocation{}, ctx, errors,
+                                requested_open_complnums, requested_shut_complnums);
+        return connections;
+    };
+
+    // The inactive cell's connection is dropped however it is reported.
+    const auto ignored = load(Opm::InputErrorAction::IGNORE);
+    BOOST_REQUIRE_EQUAL(ignored.size(), 1U);
+    BOOST_CHECK_EQUAL(ignored[0].getK(), 0);
+
+    BOOST_CHECK_EQUAL(load(Opm::InputErrorAction::WARN).size(), 1U);
+    BOOST_CHECK_THROW(load(Opm::InputErrorAction::THROW_EXCEPTION), Opm::OpmInputError);
+}
+
 
 BOOST_AUTO_TEST_CASE(loadCOMPDATTESTSPE1) {
     Opm::Parser parser;

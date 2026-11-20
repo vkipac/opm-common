@@ -1162,14 +1162,23 @@ Defaulted grid coordinates is not allowed for COMPDAT as part of ACTIONX)"
       Function is quite dangerous - because if this is called while holding a
       Well pointer that will go stale and needs to be refreshed.
     */
-    bool Schedule::updateWellStatus( const std::string& well_name, std::size_t reportStep , Well::Status status, std::optional<KeywordLocation> location) {
+    bool Schedule::updateWellStatus( const std::string& well_name, std::size_t reportStep , Well::Status status, std::optional<KeywordLocation> location,
+                                     const ParseContext* parseContext, ErrorGuard* errors) {
         if (status != Well::Status::SHUT) {
             this->potential_wellopen_patterns.insert(well_name);
         }
         auto& snapshot = this->snapshots[reportStep];
         auto well2 = snapshot.wells.get(well_name);
         if (well2.getConnections().empty() && status == Well::Status::OPEN) {
-            if (location) {
+            if (parseContext != nullptr && errors != nullptr) {
+                const auto msg_fmt = location.has_value()
+                    ? fmt::format("Problem with {{keyword}}\n"
+                                  "In {{file}} line {{line}}\n"
+                                  "Well {} has no connections to grid and will remain SHUT", well_name)
+                    : fmt::format("Well {} has no connections to grid and will remain SHUT", well_name);
+                parseContext->handleError(ParseContext::SCHEDULE_WELL_NO_CONNECTIONS,
+                                          msg_fmt, location, *errors);
+            } else if (location) {
                 auto msg = fmt::format("Problem with {}\n"
                                        "In {} line{}\n"
                                        "Well {} has no connections to grid and will remain SHUT", location->keyword, location->filename, location->lineno, well_name);

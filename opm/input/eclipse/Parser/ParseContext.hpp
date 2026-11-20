@@ -599,6 +599,16 @@ namespace Opm {
         /// Connection in zero-permeability cell (COMPDAT keyword).
         const static std::string SCHEDULE_COMPDAT_ZERO_PERM;
 
+        /// Connection in an inactive cell (COMPDAT or COMPDATL keyword).
+        ///
+        /// The connection is ignored either way.
+        const static std::string SCHEDULE_COMPDAT_INACTIVE_CELL;
+
+        /// Well opened without any connections to the grid.
+        ///
+        /// The well remains shut either way.
+        const static std::string SCHEDULE_WELL_NO_CONNECTIONS;
+
         /// A connection-targeting keyword (e.g. CECON) did not match any
         /// connection in the targeted well.
         const static std::string SCHEDULE_NO_CONNECTION_MATCH;

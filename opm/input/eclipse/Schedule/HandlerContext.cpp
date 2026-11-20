@@ -141,7 +141,8 @@ bool HandlerContext::updateWellStatus(const std::string& well,
                                       const std::optional<KeywordLocation>& location)
 {
     return schedule_.updateWellStatus(well, currentStep,
-                                      status, location);
+                                      status, location,
+                                      &parseContext, &errors);
 }
 
 WellStatus HandlerContext::getWellStatus(const std::string& well) const

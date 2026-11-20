@@ -539,15 +539,13 @@ namespace Opm {
         for (int k = K1; k <= K2; ++k) {
             const auto& cell = grid.get_cell(I, J, k, lgr_label);
             if (!cell.is_active()) {
-                const auto* kw_ext = lgr_label.has_value() ? "L" : "";
-
-                auto msg = fmt::format(R"(Problem with COMPDAT{} keyword
-In {} line {}
+                const auto msg_fmt = fmt::format(R"(Problem with {{keyword}} keyword
+In {{file}} line {{line}}
 The cell ({},{},{}) in well {} is not active and the connection will be ignored)",
-                                       kw_ext, location.filename, location.lineno,
-                                       I + 1, J + 1, k + 1, wname);
+                                                 I + 1, J + 1, k + 1, wname);
 
-                OpmLog::warning(msg);
+                parseContext.handleError(ParseContext::SCHEDULE_COMPDAT_INACTIVE_CELL,
+                                         msg_fmt, location, errors);
                 continue;
             }
 

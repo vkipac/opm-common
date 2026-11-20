@@ -9472,6 +9472,76 @@ ENDACTIO
 )"}), "WCON* patterns in ACTIONX must still exempt the well");
 }
 
+// A well connected only in an inactive cell is reported twice, for the
+// connection and for being opened without one. Both go through the parse
+// context, so that a run can decide how much of that it wants to hear.
+BOOST_AUTO_TEST_CASE(InactiveConnectionsReportedThroughParseContext)
+{
+    const auto deck = Parser{}.parseString(R"(
+RUNSPEC
+DIMENS
+ 3 1 1 /
+OIL
+WATER
+START
+1 JAN 2000 /
+GRID
+DXV
+ 3*100 /
+DYV
+ 100 /
+DZV
+ 10 /
+TOPS
+ 3*2000 /
+PORO
+ 3*0.25 /
+PERMX
+ 3*100 /
+PERMY
+ 3*100 /
+PERMZ
+ 3*10 /
+ACTNUM
+ 1 0 1 /
+SCHEDULE
+WELSPECS
+  'P' 'G' 2 1 1* 'OIL' /
+/
+COMPDAT
+  'P' 2 1 1 1 'OPEN' /
+/
+WCONPROD
+  'P' 'OPEN' 'ORAT' 100 /
+/
+)");
+
+    EclipseGrid grid(deck);
+    const TableManager table(deck);
+    const FieldPropsManager fp(deck, Phases{true, true, false}, grid, table);
+    const Runspec runspec(deck);
+
+    const auto build = [&](const InputErrorAction inactiveCell, const InputErrorAction noConnections)
+    {
+        auto parseContext = ParseContext{};
+        parseContext.update(ParseContext::SCHEDULE_COMPDAT_INACTIVE_CELL, inactiveCell);
+        parseContext.update(ParseContext::SCHEDULE_WELL_NO_CONNECTIONS, noConnections);
+        auto errors = ErrorGuard{};
+
+        return Schedule { deck, grid, fp, NumericalAquifers{}, runspec,
+                          parseContext, errors, std::make_shared<Python>() };
+    };
+
+    const auto quiet = build(InputErrorAction::IGNORE, InputErrorAction::IGNORE);
+    BOOST_CHECK(quiet.getWell("P", 0).getConnections().empty());
+    BOOST_CHECK(quiet.getWell("P", 0).getStatus() == Well::Status::SHUT);
+
+    BOOST_CHECK_THROW(build(InputErrorAction::THROW_EXCEPTION, InputErrorAction::IGNORE),
+                      OpmInputError);
+    BOOST_CHECK_THROW(build(InputErrorAction::IGNORE, InputErrorAction::THROW_EXCEPTION),
+                      OpmInputError);
+}
+
 // Wells added to a schedule after it has been built, the way a sector run
 // adds the wells of the model it was cut out of. The keywords for a later
 // step refer to a well inserted at an earlier one, which only works if the

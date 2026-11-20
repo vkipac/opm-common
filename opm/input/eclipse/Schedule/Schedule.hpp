@@ -604,7 +604,8 @@ namespace Opm {
 
         void updateGuideRateModel(const GuideRateModel& new_model, std::size_t report_step);
         GTNode groupTree(const std::string& root_node, std::size_t report_step, std::size_t level, const std::optional<std::string>& parent_name) const;
-        bool updateWellStatus( const std::string& well, std::size_t reportStep, WellStatus status, std::optional<KeywordLocation> = {});
+        bool updateWellStatus( const std::string& well, std::size_t reportStep, WellStatus status, std::optional<KeywordLocation> = {},
+                               const ParseContext* parseContext = nullptr, ErrorGuard* errors = nullptr);
         void addWellToGroup( const std::string& group_name, const std::string& well_name , std::size_t timeStep);
         void iterateScheduleSection(std::size_t load_start,
                                     std::size_t load_end,
